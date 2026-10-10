@@ -1,0 +1,20 @@
+name = "private-email-bot"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Never put secret values in this file. See SETUP.md.
+[vars]
+HOST_TELEGRAM_ID = "REPLACE_WITH_YOUR_NUMERIC_TELEGRAM_ID"
+MAX_MEMBERS_PER_KEY = "5"
+MAX_KEYS = "10"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "private-email-bot"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[observability]
+enabled = false
+
