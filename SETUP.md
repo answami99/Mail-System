@@ -125,3 +125,7 @@ Default capacity is ten active keys including Host, with up to five Telegram acc
 - To stop all processing, disable the GitHub poll workflow and remove the Telegram webhook through your own bot administration. Key revocation is available for individual mailbox shutdown.
 - A Telegram timeout can leave an uncertain send outcome. Retrying may duplicate that notification; this is not an exactly-once system.
 - If GitHub schedules become too unreliable or the free allocation is insufficient, the same poller can run from an always-on trusted machine. Its backend/API boundary is independent of GitHub.
+
+## Dashboard installation shortcut
+
+When the Telegram token and other secrets are already stored in Cloudflare, deploy the current Worker code, set the two GitHub Actions secrets, and run **Connect Telegram bot** manually from Actions. The runner-authenticated `/internal/setup` route validates encryption, database access and the expected bot username before registering the fixed production callback URL. It refuses to replace an existing different webhook and never returns the bot token. This installation is bound to `RajasthanMail_bot` at `https://private-email-bot.answami99.workers.dev`. The connection workflow does not read any mailbox or send notification messages.

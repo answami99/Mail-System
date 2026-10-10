@@ -197,3 +197,30 @@ test('expired password entry cannot overwrite credentials', async () => {
   const c=await first(s.env,'SELECT * FROM credentials WHERE key_id=?',a.id);
   assert.equal(await unseal(s.env,`password:${a.id}`,c.password_cipher),'private-password');
 });
+
+test('setup requires runner authentication and cannot redirect updates or replace another bot webhook', async () => {
+  const s=setup();
+  s.env.KEY_PEPPER='p'.repeat(32); s.env.WEBHOOK_SECRET='w'.repeat(32);
+  const calls=[]; let destination=''; let username='RajasthanMail_bot';
+  s.tg.call=async (method,data) => {
+    calls.push({method,data});
+    if(method==='getMe') return {username};
+    if(method==='getWebhookInfo') return {url:destination,max_connections:1};
+    if(method==='setWebhook') {destination=data.url; return true;}
+  };
+  assert.equal((await s.api('/internal/setup',{}, {Authorization:'Bearer wrong'})).status,403);
+  assert.equal(calls.length,0);
+  assert.equal((await s.api('/internal/setup',{url:'https://attacker.example'})).status,400);
+  username='other_bot';
+  assert.equal((await s.api('/internal/setup',{})).status,409);
+  username='RajasthanMail_bot'; destination='https://existing.example/telegram';
+  assert.equal((await s.api('/internal/setup',{})).status,409);
+  assert.equal(calls.some(c=>c.method==='setWebhook'),false);
+  destination='';
+  assert.equal((await s.api('/internal/setup',{})).status,200);
+  const update=calls.find(c=>c.method==='setWebhook').data;
+  assert.equal(update.url,'https://private-email-bot.answami99.workers.dev/telegram');
+  assert.equal(update.secret_token,s.env.WEBHOOK_SECRET);
+  assert.equal(update.drop_pending_updates,false);
+  assert.equal((await s.api('/internal/setup',{})).status,200);
+});
