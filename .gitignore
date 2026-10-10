@@ -1,0 +1,11 @@
+.env
+.dev.vars
+.venv/
+.wrangler/
+node_modules/
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+secrets*.json
+

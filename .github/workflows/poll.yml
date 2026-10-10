@@ -1,0 +1,41 @@
+name: Check email inboxes
+on:
+  schedule:
+    # UTC 04:00–12:30 = IST 09:30–18:00, Monday–Friday (18 runs).
+    - cron: '0,30 4-12 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Explicitly check and deliver now, even outside work hours'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+concurrency:
+  group: email-poll
+  cancel-in-progress: false
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: poller/requirements.txt
+      - run: pip install -r poller/requirements.txt
+      - name: Poll and deliver
+        env:
+          BOT_BACKEND_URL: ${{ secrets.BOT_BACKEND_URL }}
+          BOT_RUNNER_TOKEN: ${{ secrets.BOT_RUNNER_TOKEN }}
+          EWS_AUTH_TYPE: ${{ vars.EWS_AUTH_TYPE || 'NTLM' }}
+          MANUAL_FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$MANUAL_FORCE" = "true" ]; then
+            python -m poller.run --force
+          else
+            python -m poller.run
+          fi
