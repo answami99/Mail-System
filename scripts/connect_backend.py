@@ -30,6 +30,18 @@ def main():
         except Exception:
             reason = None
         print('Backend HTTP status:', error.code)
+        print('Response format:', 'JSON' if 'json' in error.headers.get('Content-Type','') else 'non-JSON')
+        print('Cloudflare challenge:', error.headers.get('cf-mitigated') == 'challenge')
+        # Public health diagnostic sends no credentials and can safely expose a bounded error page.
+        try:
+            with build_opener(NoRedirect).open(origin + '/healthz',timeout=15) as health:
+                print('Public health HTTP status:',health.status)
+        except HTTPError as public_error:
+            text=public_error.read(800).decode('utf-8','replace').replace(token,'[redacted]')
+            print('Public health HTTP status:',public_error.code)
+            print('Public health response:',repr(text))
+        except Exception:
+            print('Public health request failed at network level.')
         print('Backend result:', reason if reason in safe else 'Unrecognized response (content withheld)')
         return 1
     except URLError:
