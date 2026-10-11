@@ -2,7 +2,7 @@
 
 Repository: [answami99/Mail-System](https://github.com/answami99/Mail-System) · Telegram: [@RajasthanMail_bot](https://t.me/RajasthanMail_bot)
 
-Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, and live notification delivery verified on 11 October 2026.** Correcting the saved password resolved the Exchange login failure. The live test delivered three notifications, preserved all three unread emails, and sent zero duplicates on a repeat scan. Telegram webhook and automatic first-check dispatch are also verified. Named onboarding and host management buttons are deployed. **Continuous real-time delivery is not active:** a bounded NTLM streaming test passed, but the Exchange server has not called the deployed push receiver. Scheduled checks are configured for 24/7; an actual scheduled run and sustained usage still need observation.
+Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, and live notification delivery verified on 11 October 2026.** Correcting the saved password resolved the Exchange login failure. The live test delivered three notifications, preserved all three unread emails, and sent zero duplicates on a repeat scan. Telegram webhook and automatic first-check dispatch are also verified. Named onboarding and host management buttons are deployed. Button menus cover common host and user actions, and the latest check attempt/result is recorded separately from the last successful check. **Continuous real-time delivery is not active:** a bounded NTLM streaming test passed, but the Exchange server has not called the deployed push receiver. Scheduled checks are configured every ten minutes, Monday–Friday from 09:30 to 18:00 IST; an actual scheduled run and sustained usage still need observation.
 
 ## What a notification looks like
 
@@ -22,12 +22,24 @@ One notification per email per enrolled Telegram account. The body and attachmen
 - A new account sees a welcome addressed to the person/organisation named on its code, then must enter its own name before enrollment. The prompt explains that the host can see the name to identify users and help prevent misuse. Names are self-declared labels, not verified identity. First person to finish joining becomes its mailbox manager. Only that manager (or the host for its own mailbox) can change its email/password. The host can transfer management with `/owner`.
 - The host has a separate mailbox under its own key, with the same enrollment flow.
 - Initial checks include all existing unread Inbox mail. Each later check finds unread mail and skips durable delivery records. An email read or moved out of Inbox before a poll will not be picked up.
-- The configured notification window is **24 hours, every day**, as requested. Scheduled unread-mail checks run twice an hour at UTC minutes 7 and 37, including weekends. The EWS push receiver can request a GitHub workflow when callbacks arrive, but live callback acceptance has not passed, so it currently provides no real-time delivery. GitHub startup and scheduling delays still apply.
+- Scheduled unread-mail checks run **every 10 minutes, Monday–Friday, 09:30–18:00 IST inclusive** (52 scheduled runs per working day). The workflow and backend both use ten-minute slots; a delayed final run can complete the 18:00 slot until 18:09 IST. This replaces the earlier 24/7 request. The EWS push receiver is retained, but live callback acceptance has not passed, so production delivery depends on scheduled checks. GitHub startup and scheduling delays still apply.
 - New Telegram accounts get a separate first check after their mailbox is ready, including outside work hours. This check delivers only to the joining account. `GITHUB_DISPATCH_TOKEN` enables immediate workflow requests; GitHub startup can still be delayed. Without it, enrollment stays queued until a regular check. Repeating `/start` on an enrolled account does not request another check.
 - D1 stores encrypted credentials and queued notification metadata, plus delivery receipts. GitHub runners are temporary and do not store state in commits, caches or artifacts.
 - Retries retain queued notifications even if an email later becomes read. Completed delivery records normally prevent repeats. A new Telegram account receives the unread backlog at the next check.
 - Authentication/API failures pause the affected mailbox after three checks. Network errors retry next scheduled run. `/status` and host `/health` show failures and last successful check.
 - Revoking a key removes its credentials and queued metadata. Removing a user blocks re-enrollment until the host allows it. Already sent Telegram messages cannot be retracted by revocation; an in-flight send may complete.
+
+## Button menus and last-check results
+
+Open `/start` or `/menu` once to show the persistent button keyboard.
+
+- **Host:** Last checks, Manage access, Create code, My mailbox, Change email, Change password and Help. Named access views include account removal/allowing, mailbox manager transfer with confirmation, key revocation with confirmation and check details.
+- **User:** My mailbox, Last check and Help; mailbox managers also see Change email and Change password. Buttons retain the same server-side access checks as commands.
+- **Entry prompts:** show a Cancel button. Help and navigation cannot accidentally be stored as a password or name. Commands remain available through `/commands`.
+
+**Last checks** shows every active key by name and distinguishes success, login/access failure, network failure, incomplete scan, running check and an interrupted/expired run. It includes the latest attempt time and last success in IST. Mailbox details show completion time and pending notifications. Older successes are not presented as the result of a later failed attempt. After twenty minutes without a reported attempt during office hours, a warning appears (with a twenty-minute grace period after opening). This warning is displayed when viewing status; it is not an independent watchdog.
+
+A successful check means the inbox scan completed. Telegram delivery happens afterward; pending notifications can remain even when the scan succeeded. Checks never mark messages read.
 
 ## Hosting choice and limits
 
@@ -37,8 +49,8 @@ This targets free allowances, **not unlimited hosting or guaranteed delivery tim
 
 | Service | Published allowance or constraint | Consequence |
 |---|---|---|
-| GitHub Free, private repository | 2,000 Actions minutes/month | 24/7 recovery alone is about 1,440 runs in a 30-day month, plus new-mail event jobs. A private repository could exceed free minutes. This repository is public; standard hosted runners have different billing. Measure usage and keep secrets out of code. |
-| GitHub schedules | Runs may be delayed or dropped; public-repo schedules disable after 60 inactive days | No exact 30-minute reliability guarantee. Inspect Actions and `/health`. |
+| GitHub Free, private repository | 2,000 Actions minutes/month | Ten-minute office-hour polling is about 1,144 runs across 22 working days, plus first checks and manual runs. A private repository could exceed free minutes. This repository is public; standard hosted runners have different billing. Measure usage and keep secrets out of code. |
+| GitHub schedules | Runs may be delayed or dropped; public-repo schedules disable after 60 inactive days | No exact ten-minute timing guarantee. Use the Last checks button and inspect Actions when results are overdue. |
 | Cloudflare Workers Free | 100,000 requests/day, 10 ms CPU per invocation | Small requests, per-message ingestion/delivery, no browser automation. Real deployment/load testing required; local tests do not measure Cloudflare CPU quotas. |
 | D1 Free | 5M rows read/day, 100k written/day, 5 GB total | Ten small mailboxes are a reasonable starting target, but backlog volume and retained delivery records determine usage. |
 | Telegram | Rate limits and finite message length | Runner paces delivery at roughly one message/second; 429 responses are deferred. Large backlogs may take several checks. |

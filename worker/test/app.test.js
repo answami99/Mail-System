@@ -5,11 +5,12 @@ import {readFileSync} from 'node:fs';
 import {handle} from '../src/index.js';
 import {formatEmail, first, run, unseal, seal, now} from '../src/common.js';
 import {slotAt} from '../src/jobs.js';
+import {checkOutcome,overdue} from '../src/ui.js';
 import {queueInitial} from '../src/initial.js';
 
 // Real SQLite constraints/transactions behind the small D1 async interface.
 class D1 {
-  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
+  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql','0004_check_status.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
   prepare(sql) {
     const query = this.db.prepare(sql);
     const make = args => ({
@@ -123,8 +124,11 @@ test('exact IST weekday slots, including endpoints, late grace and weekend exclu
   assert.equal(slotAt(new Date('2026-10-12T03:59:00Z')),null);
   assert.equal(slotAt(new Date('2026-10-12T04:00:00Z')),'2026-10-12T09:30+05:30');
   assert.equal(slotAt(new Date('2026-10-16T12:30:00Z')),'2026-10-16T18:00+05:30');
-  assert.equal(slotAt(new Date('2026-10-16T12:59:59Z')),'2026-10-16T18:00+05:30');
-  assert.equal(slotAt(new Date('2026-10-16T13:00:00Z')),null);
+  assert.equal(slotAt(new Date('2026-10-12T04:09:59Z')),'2026-10-12T09:30+05:30');
+  assert.equal(slotAt(new Date('2026-10-12T04:10:00Z')),'2026-10-12T09:40+05:30');
+  assert.equal(slotAt(new Date('2026-10-12T04:20:00Z')),'2026-10-12T09:50+05:30');
+  assert.equal(slotAt(new Date('2026-10-16T12:39:59Z')),'2026-10-16T18:00+05:30');
+  assert.equal(slotAt(new Date('2026-10-16T12:40:00Z')),null);
   assert.equal(slotAt(new Date('2026-10-17T06:00:00Z')),null);
   assert.equal(slotAt(new Date('2026-10-18T06:00:00Z')),null);
 });
@@ -263,12 +267,14 @@ test('expired password entry cannot overwrite credentials', async () => {
 test('setup requires runner authentication and cannot redirect updates or replace another bot webhook', async t => {
   const s=setup();
   s.env.TELEGRAM_BOT_TOKEN='12345:'+ 'a'.repeat(35); s.env.KEY_PEPPER='p'.repeat(32); s.env.WEBHOOK_SECRET='w'.repeat(32);
-  const calls=[]; let destination=''; let username='RajasthanMail_bot';
+  const calls=[]; let destination=''; let username='RajasthanMail_bot'; const commandMenus=new Map();
   s.tg.call=async (method,data) => {
     calls.push({method,data});
     if(method==='getMe') return {username};
     if(method==='getWebhookInfo') return {url:destination,max_connections:1};
     if(method==='setWebhook') {destination=data.url; return true;}
+    if(method==='setMyCommands') {commandMenus.set(data.scope?.type||'default',data.commands);return true;}
+    if(method==='getMyCommands') return commandMenus.get(data.scope?.type||'default');
   };
   assert.equal((await s.api('/internal/setup',{}, {Authorization:'Bearer wrong'})).status,403);
   assert.equal(calls.length,0);
@@ -382,10 +388,10 @@ test('unreachable push callbacks back off without claiming realtime health or di
   const s=setup(),key=await s.enroll(2,'Alice'),p=await registeredPush(s,key);
   await run(s.env,'UPDATE push_subscriptions SET created_at=?',now()-600);
   assert.equal((await s.api('/internal/push/prepare',p.lease)).body.needed,false);
-  await s.chat(2,'/status');assert.match(s.sent.at(-1).text,/Server callbacks unavailable; using scheduled checks/);
+  await s.chat(2,'/status');assert.match(s.sent.at(-1).text,/Every 10 minutes/);
   await s.api('/internal/push/failed',{...p.lease,generation:p.prep.generation});
   assert.equal((await s.api('/internal/push/prepare',p.lease)).body.needed,false);
-  await s.chat(2,'/status');assert.match(s.sent.at(-1).text,/Subscription unavailable; using scheduled checks/);
+  await s.chat(2,'/status');assert(!s.sent.at(-1).text.includes('✅ Successful'));
   assert.equal((await first(s.env,'SELECT paused FROM credentials WHERE key_id=?',key.id)).paused,0);
   await run(s.env,'UPDATE push_subscriptions SET created_at=?,last_request=9,callback_error=?',now()-21601,'Previous failure');
   const next=(await s.api('/internal/push/prepare',p.lease)).body;assert(next.needed);
@@ -444,4 +450,76 @@ test('host can manage accounts by named buttons without Telegram IDs; forged act
   assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,1);
   await callback(1,`revoke:${key.id}:confirm`,906);
   assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,0);
+});
+
+test('scheduled checks use distinct ten-minute slots and record a failure after a prior success',async t=>{
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-10-12T04:00:00Z')});
+  const s=setup(),key=await s.enroll(2,'Alice');
+  const batch=(await s.api('/internal/jobs',{})).body;assert.equal(batch.slot,'2026-10-12T09:30+05:30');
+  const one=(await s.api('/internal/claim',{...batch.jobs[0],slot:batch.slot})).body;
+  assert.equal((await first(s.env,'SELECT last_result FROM credentials WHERE key_id=?',key.id)).last_result,'running');
+  t.mock.timers.tick(1000);
+  await s.api('/internal/finish',{...one,slot:batch.slot,result:'success'});
+  const success=await first(s.env,'SELECT last_checked,last_finished FROM credentials WHERE key_id=?',key.id);
+  assert.equal(success.last_checked,success.last_finished);
+  assert.equal((await s.api('/internal/jobs',{})).body.jobs.length,0);
+  t.mock.timers.tick(599000);
+  const next=(await s.api('/internal/jobs',{})).body;assert.equal(next.slot,'2026-10-12T09:40+05:30');assert.equal(next.jobs.length,1);
+  const two=(await s.api('/internal/claim',{...next.jobs[0],slot:next.slot})).body;
+  await s.api('/internal/finish',{...two,slot:next.slot,result:'network'});
+  const failed=await first(s.env,'SELECT * FROM credentials WHERE key_id=?',key.id);
+  assert.equal(failed.last_result,'network');assert.equal(failed.last_checked,success.last_checked);
+  assert(failed.last_attempt>success.last_checked);assert(failed.last_finished>=failed.last_attempt);
+  await s.chat(1,'🕒 Last checks');assert.match(s.sent.at(-1).text,/Alice\n⚠️ Mail server unavailable/);
+  assert.match(s.sent.at(-1).text,/09:40/);assert.match(s.sent.at(-1).text,/Last success:.*09:30/);
+  await s.chat(2,'🕒 Last check');assert.match(s.sent.at(-1).text,/Mail server unavailable/);
+  assert(!s.sent.at(-1).text.includes('✅ Successful'));
+});
+
+test('check displays distinguish expired runs, incomplete scans and overdue office-hour results',()=>{
+  assert.match(checkOutcome({status:'Check completed',last_result:'running',lease_until:now()-1}),/interrupted or timed out/);
+  assert.match(checkOutcome({status:'Check completed',last_result:'running',lease_until:now()+60}),/in progress/);
+  assert.match(checkOutcome({status:'Partial',last_result:'partial',paused:0}),/Incomplete/);
+  const old={status:'Check completed',last_attempt:1,last_result:'success'};
+  assert.equal(overdue(old,new Date('2026-10-12T04:19:00Z')),false);
+  assert.equal(overdue(old,new Date('2026-10-12T04:20:00Z')),true);
+  assert.equal(overdue(old,new Date('2026-10-12T13:00:00Z')),false);
+  assert.equal(overdue(old,new Date('2026-10-18T06:00:00Z')),false);
+});
+
+test('button menus guide host and users, protect credential prompts and preserve mailbox isolation',async()=>{
+  const s=setup(),alice=await s.enroll(2,'Alice');await s.enroll(3,'Bob');
+  await s.chat(1,'/start');assert(s.sent.at(-1).markup.keyboard.flat().includes('🕒 Last checks'));
+  await s.chat(2,'/start');assert(s.sent.at(-1).markup.keyboard.flat().includes('🕒 Last check'));
+  assert(!s.sent.at(-1).markup.keyboard.flat().includes('➕ Create code'));
+  await s.chat(4,`/start ${alice.code}`);await s.chat(4,'/start');
+  assert(!s.sent.at(-1).markup.keyboard.flat().includes('🔐 Change password'));
+  await s.chat(2,'🔐 Change password');assert.deepEqual(s.sent.at(-1).markup.keyboard,[['❌ Cancel']]);
+  await s.chat(2,'📬 My mailbox');assert.match(s.sent.at(-1).text,/Finish the current step/);
+  await s.chat(2,'❓ Help');assert.equal((await first(s.env,'SELECT stage FROM states WHERE user_id=2')).stage,'password');
+  await s.chat(2,'❌ Cancel');assert.equal(await first(s.env,'SELECT stage FROM states WHERE user_id=2'),null);
+  assert(s.sent.at(-1).markup.keyboard.flat().includes('📬 My mailbox'));
+  const cred=await first(s.env,'SELECT password_cipher FROM credentials WHERE key_id=?',alice.id);
+  assert.equal(await unseal(s.env,`password:${alice.id}`,cred.password_cipher),'private-password');
+  await s.chat(2,'🕒 Last checks');assert(!s.sent.at(-1).text.includes('Bob'));
+  const callback=(user,data,id)=>s.api('/telegram',{update_id:id,callback_query:{id:`q${id}`,from:{id:user},message:{chat:{id:user,type:'private'}},data}});
+  const before=s.sent.length;await callback(2,`check:${alice.id}`,1001);assert.equal(s.sent.length,before);
+  await callback(2,'menu:keys',1002);assert(!s.sent.at(-1).text.includes(alice.code));
+  await callback(1,'menu:lastcheck',1003);assert.match(s.sent.at(-1).text,/Bob/);
+  await callback(1,`manager:${alice.id}:4`,1004);assert.match(s.sent.at(-1).text,/able to change/);
+  assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',alice.id)).owner_id,2);
+  await callback(1,`managerconfirm:${alice.id}:4`,1005);assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',alice.id)).owner_id,4);
+  await s.chat(4,'/start');assert(s.sent.at(-1).markup.keyboard.flat().includes('🔐 Change password'));
+  assert.equal((await s.rawChat(2,'constructor')).status,200);
+  assert.equal((await callback(1,'menu:constructor',1006)).status,200);
+  assert.equal((await callback(1,'malformed',1007)).status,200);
+});
+
+test('changing credentials clears latest-attempt state and stale finishes cannot restore it',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),lease=await s.claim(key);
+  await s.chat(2,'🔐 Change password');await s.chat(2,'replacement');
+  let c=await first(s.env,'SELECT last_attempt,last_finished,last_result FROM credentials WHERE key_id=?',key.id);
+  assert.equal(c.last_attempt,null);assert.equal(c.last_result,null);assert.equal(c.last_finished,null);
+  assert.equal((await s.api('/internal/finish',{...lease,slot:'manual:test',result:'success'})).status,409);
+  c=await first(s.env,'SELECT last_result FROM credentials WHERE key_id=?',key.id);assert.equal(c.last_result,null);
 });

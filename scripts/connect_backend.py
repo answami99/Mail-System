@@ -28,7 +28,7 @@ def main():
         try:
             details = json.loads(error.read(2048))
             reason = details.get('error')
-            if details.get('stage') in {'authentication','encryption','database','telegram-token','telegram-webhook-read','telegram-webhook-register','telegram-webhook-verify','initial-check'}:
+            if details.get('stage') in {'authentication','encryption','database','telegram-token','telegram-webhook-read','telegram-webhook-register','telegram-webhook-verify','telegram-menus','initial-check'}:
                 print('Setup stage:',details['stage'])
             if type(details.get('telegram_code')) is int:
                 print('Telegram status:',details['telegram_code'])
@@ -56,6 +56,10 @@ def main():
         print('Connection failed. Check Cloudflare settings, deployed code, and the bot token; no secret values were logged.')
         return 1
     print('RajasthanMail_bot webhook registered and verified. Ready for /start in Telegram.')
+    if result.get('menus_configured'):
+        print('Host and user command menus verified with Telegram.')
+    if result.get('host_menu_sent'):
+        print('Host button dashboard accepted by Telegram.')
     if type(result.get('initial_checks_queued')) is int and type(result.get('initial_checks_requested')) is int:
         print('Previously connected accounts awaiting a first check:', result['initial_checks_queued'])
         print('First checks accepted by GitHub:', result['initial_checks_requested'])

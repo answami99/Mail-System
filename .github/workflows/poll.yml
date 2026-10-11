@@ -1,9 +1,9 @@
 name: Check email inboxes
 on:
   schedule:
-    # Recovery checks only; EWS callbacks trigger normal delivery immediately.
-    # Offset from the top of the hour to reduce scheduled-run congestion.
-    - cron: '7,37 * * * *'
+    # Mon–Fri, 09:30–18:00 IST inclusive (UTC schedules).
+    - cron: '*/10 4-11 * * 1-5'
+    - cron: '0,10,20,30 12 * * 1-5'
   workflow_dispatch:
     inputs:
       force:

@@ -1,5 +1,6 @@
 import {all, canEdit, digest, first, isHost, member, now, randomCode, rate, run, seal, stmt, unseal, sameSecret} from './common.js';
 import {queueInitial} from './initial.js';
+import {callbackCommands, menuCommands, showHelp, showLastChecks, showMailbox, showMenu, withMenus} from './ui.js';
 
 const help = '/status — last check and delivery backlog\n/email — connect or change mailbox\n/password — change password\n/cancel — cancel entry';
 const adminHelp = '\n/new Person or organisation — create a named code\n/keys — manage people, keys and accounts using buttons\n/members KEY_ID — accounts\n/remove TELEGRAM_ID — block an account\n/allow TELEGRAM_ID — allow it to join again\n/revoke KEY_ID — revoke key and erase mailbox data\n/owner KEY_ID TELEGRAM_ID — change mailbox manager\n/resume KEY_ID — retry a paused mailbox\n/health — all mailbox status';
@@ -17,7 +18,7 @@ async function askPassword(env, user, draft, tg) {
   await tg.send(user, 'Enter the mailbox password (within 10 minutes), or /cancel. It passes through Telegram cloud chat, which is not end-to-end encrypted. I will attempt to delete your password message and encrypt it in backend storage. The system owner controls the encryption key.');
 }
 async function afterName(env, user, joined, tg, fresh=true) {
-  await tg.send(user, `Thank you, ${joined.label}. You are connected to ${joined.name}.\n${help}`);
+  await tg.send(user, `Thank you, ${joined.label}. You are connected to ${joined.name}.\nUse the buttons below to view your mailbox or update your details.`);
   const creds=await first(env,'SELECT revision FROM credentials WHERE key_id=?',joined.key_id);
   if(!creds && canEdit(env,joined)) return beginEmail(env,user,tg);
   if(!creds) return tg.send(user,'The mailbox manager must connect the email account first.');
@@ -66,7 +67,7 @@ async function completeName(env,user,text,pending,tg) {
   ]);
   const joined=await member(env,user);
   if(!joined || joined.key_id!==key_id) return tg.send(user,'This key has reached its account limit. Contact the host.');
-  if(isHost(env,user)) await tg.send(user,'Host access enabled.\n'+adminHelp);
+  if(isHost(env,user)) await tg.send(user,'Host access enabled. Use Create code, Manage access and Last checks on your dashboard.');
   return afterName(env,user,joined,tg);
 }
 
@@ -76,15 +77,28 @@ async function hostButtons(env, query, tg) {
   if(typeof query.id!=='string' || typeof query.data!=='string' || query.data.length>64) return;
   await tg.call('answerCallbackQuery',{callback_query_id:query.id});
   const [action,keyId,target]=query.data.split(':');
+  if(typeof keyId!=='string' || !/^(host|key-\d+)$/.test(keyId)) return;
   const key=await first(env,'SELECT * FROM access_keys WHERE id=? AND active=1',keyId);
   if(!key) return tg.send(user,'This key is no longer active. Open /keys again.');
+  if(action==='check') return showMailbox(env,user,tg,keyId);
+  if(action==='resume') {await admin(env,user,'/resume',keyId,tg,0);return showMailbox(env,user,tg,keyId);}
   if(action==='members') {
     const rows=await all(env,'SELECT user_id,label,active,blocked FROM members WHERE key_id=? ORDER BY joined_at,user_id',keyId);
     const text=`${key.name}\nKey: ${keyId==='host'?'your private host key':await unseal(env,`key:${keyId}`,key.code_cipher)}\nTelegram accounts: ${rows.filter(r=>r.active&&!r.blocked).length}\n`+
       (rows.map((r,i)=>`${i+1}. ${r.label} — ${r.blocked?'blocked':r.active?'active':'inactive'}`).join('\n')||'No accounts have joined yet.');
     const buttons=rows.filter(r=>String(r.user_id)!==env.HOST_TELEGRAM_ID).map(r=>[{text:`${r.blocked?'Allow':'Remove'} ${r.label}`.slice(0,64),callback_data:`${r.blocked?'allow':'remove'}:${keyId}:${r.user_id}`}]);
+    for(const r of rows.filter(r=>r.active&&!r.blocked&&r.user_id!==key.owner_id&&keyId!=='host'))
+      buttons.push([{text:`Make manager: ${r.label}`.slice(0,64),callback_data:`manager:${keyId}:${r.user_id}`}]);
+    buttons.push([{text:'Last check',callback_data:`check:${keyId}`},{text:'All access codes',callback_data:'menu:keys'}]);
     if(keyId!=='host') buttons.push([{text:`Revoke ${key.name}`.slice(0,64),callback_data:`revoke:${keyId}`}]);
     return tg.send(user,text,{inline_keyboard:buttons});
+  }
+  if(['manager','managerconfirm'].includes(action) && keyId!=='host' && /^\d+$/.test(target||'')) {
+    const account=await first(env,'SELECT label FROM members WHERE user_id=? AND key_id=? AND active=1 AND blocked=0',Number(target),keyId);
+    if(!account) return tg.send(user,'That account is no longer an active member of this key.');
+    if(action==='manager') return tg.send(user,`Make ${account.label} the mailbox manager for ${key.name}? They will be able to change its saved email address and password.`,
+      {inline_keyboard:[[{text:'Confirm manager',callback_data:`managerconfirm:${keyId}:${target}`},{text:'Back',callback_data:`members:${keyId}`}]]});
+    return admin(env,user,'/owner',`${keyId} ${target}`,tg,0);
   }
   if(['remove','allow'].includes(action) && /^\d+$/.test(target||'') && !isHost(env,target)) {
     const account=await first(env,'SELECT label FROM members WHERE user_id=? AND key_id=?',Number(target),keyId);
@@ -103,6 +117,7 @@ async function admin(env, user, command, argument, tg, updateId) {
   if (command === '/new') {
     if(!argument) {await state(env,user,'new_key');return tg.send(user,'Enter the name of the person or organisation for this code (1–64 characters).');}
     if(argument.length>64 || /[\u0000-\u001f\u007f]/.test(argument)) return tg.send(user,'Use /new Person or organisation name (1–64 characters).');
+    await run(env,'DELETE FROM states WHERE user_id=?',user);
     const id = `key-${updateId}`;
     const previous = await first(env, 'SELECT * FROM access_keys WHERE id=?', id);
     if (previous) return tg.send(user, `Name: ${previous.name}\nKey: ${await unseal(env, `key:${id}`, previous.code_cipher)}`);
@@ -156,36 +171,52 @@ async function admin(env, user, command, argument, tg, updateId) {
     await run(env, `UPDATE credentials SET paused=0,failures=0,last_slot=NULL,status='Retry requested' WHERE key_id=?`, argument);
     return tg.send(user, 'Retry requested for the next scheduled check. Verify credentials first if login failed.');
   }
-  if (command === '/health') {
-    const rows = await all(env, `SELECT k.name,c.status,c.last_checked,c.paused FROM credentials c JOIN access_keys k ON k.id=c.key_id WHERE k.active=1`);
-    return tg.send(user, rows.map(r => `${r.name}: ${r.status}${r.paused ? ' (paused)' : ''}\nLast success: ${r.last_checked ? new Date(r.last_checked * 1000).toISOString() : 'never'}`).join('\n\n') || 'No connected mailboxes.');
-  }
+  if (command === '/health' || command === '/lastcheck') return showLastChecks(env,user,tg);
   return false;
 }
 
 export async function handleUpdate(env, update, tg) {
-  if(update.callback_query) return hostButtons(env,update.callback_query,tg);
-  const message = update.message;
+  const query=update.callback_query;
+  const message=query?{from:query.from,chat:query.message?.chat}:update.message;
   if (!message || message.chat?.type !== 'private' || message.from?.is_bot || message.chat.id !== message.from?.id) return;
   const user = message.from.id;
   if (!await rate(env, `messages:${user}`, 30, 60)) return;
-  const text = typeof message.text === 'string' ? message.text : '';
+  const pending = await first(env, 'SELECT * FROM states WHERE user_id=? AND expires>?', user, now());
+  tg=withMenus(env,tg);
+  let callbackCommand;
+  if(query) {
+    if(typeof query.id!=='string' || typeof query.data!=='string' || query.data.length>64) return;
+    if(!await member(env,user)) return tg.call('answerCallbackQuery',{callback_query_id:query.id,text:'Access unavailable. Send /start to join.'});
+    if(!query.data.startsWith('menu:')) {
+      if(pending) {await tg.call('answerCallbackQuery',{callback_query_id:query.id});return tg.send(user,'Finish the current step, or tap Cancel before choosing another action.');}
+      return hostButtons(env,query,tg);
+    }
+    const action=query.data.slice(5);
+    callbackCommand=Object.hasOwn(callbackCommands,action)?callbackCommands[action]:null;
+    if(!callbackCommand) return;
+    await tg.call('answerCallbackQuery',{callback_query_id:query.id});
+  }
+  const rawText = typeof message.text === 'string' ? message.text : '';
+  const menuCommand=callbackCommand||(Object.hasOwn(menuCommands,rawText)?menuCommands[rawText]:null);
+  const text=menuCommand||rawText;
   const command = text.split(/\s+/, 1)[0].split('@')[0];
   const argument = text.includes(' ') ? text.slice(text.indexOf(' ') + 1).trim() : '';
-  const pending = await first(env, 'SELECT * FROM states WHERE user_id=? AND expires>?', user, now());
   // Delete credential-bearing input before any business logic or parsing errors.
-  if (pending?.stage === 'password' || /^\d{6,8}$/.test(text) || command === '/start' && argument || command === '/host') {
+  if (!query && (pending?.stage === 'password' || /^\d{6,8}$/.test(rawText) || command === '/start' && argument || command === '/host')) {
     if (!await tg.delete(user, message.message_id)) await tg.send(user, 'I could not delete your sensitive message. Please delete it from this chat yourself.');
   }
   if (command === '/cancel') {
     await run(env, 'DELETE FROM states WHERE user_id=?', user);
-    return tg.send(user, 'Cancelled.');
+    return tg.send(user, 'Cancelled. Choose an option using the buttons below.');
   }
+  if(command==='/menu') {await run(env,'DELETE FROM states WHERE user_id=?',user);return showMenu(env,user,tg);}
+  if(command==='/help') return showHelp(env,user,tg);
+  if(menuCommand && pending && !['/cancel','/menu','/help'].includes(command)) return tg.send(user,'Finish the current step, or tap Cancel before choosing another action.');
   if (command === '/start' || command === '/host') {
     await run(env, 'DELETE FROM states WHERE user_id=?', user);
     if (argument) return redeem(env, user, (message.from.first_name || 'Account').slice(0, 64), argument, tg);
     const m = await member(env, user);
-    if (m) return tg.send(user, help + (isHost(env, user) ? adminHelp : ''));
+    if (m) return showMenu(env,user,tg);
     await state(env, user, 'key');
     return tg.send(user, 'Private email bot. Enter the fixed key supplied by the host.');
   }
@@ -198,23 +229,12 @@ export async function handleUpdate(env, update, tg) {
     if (pending?.stage === 'key' || /^\d{6,8}$/.test(text)) return redeem(env, user, (message.from.first_name || 'Account').slice(0, 64), text, tg);
     return tg.send(user, 'Send /start to enter your access key.');
   }
-  if (command === '/help') return tg.send(user, help + (isHost(env, user) ? adminHelp : ''));
+  if (command === '/commands') return tg.send(user, help + (isHost(env, user) ? adminHelp : ''));
   if (isHost(env, user) && m.key_id === 'host' && command.startsWith('/')) {
     const handled = await admin(env, user, command, argument, tg, update.update_id);
     if (handled !== false) return handled;
   }
-  if (command === '/status') {
-    const c = await first(env, 'SELECT last_checked,status,paused FROM credentials WHERE key_id=?', m.key_id);
-    const count = await first(env, `SELECT COUNT(*) AS n FROM deliveries d JOIN messages msg ON msg.id=d.message_id
-      WHERE msg.key_id=? AND d.user_id=? AND d.state<>'sent'`, m.key_id, user);
-    const push=await first(env,'SELECT state,last_seen,created_at FROM push_subscriptions WHERE key_id=?',m.key_id);
-    const hours=(await first(env,"SELECT value FROM settings WHERE id='realtime_hours'"))?.value==='always'?'24 hours, every day':'Mon–Fri, 09:30–18:00 IST';
-    const realtime=push?.state==='active' && push.last_seen>now()-300?'Receiving server callbacks':
-      push?.state==='active' && push.created_at>now()-300?'Awaiting server callback':
-      push?.state==='active'?'Server callbacks unavailable; using scheduled checks':
-      push?.state==='failed'?'Subscription unavailable; using scheduled checks':'Awaiting subscription';
-    return tg.send(user, `${m.name}\n${c?.status || 'No mailbox connected'}${c?.paused ? ' (paused)' : ''}\nLast successful check: ${c?.last_checked ? new Date(c.last_checked * 1000).toLocaleString('en-GB', {timeZone:'Asia/Kolkata'}) + ' IST' : 'never'}\nPending notifications: ${count.n}\nReal-time: ${realtime}. Hours: ${hours}. Event delivery includes GitHub startup delay. Scheduled checks remain as recovery.`);
-  }
+  if (command === '/status' || command === '/lastcheck') return showMailbox(env,user,tg);
   if (command === '/email' || command === '/password' || pending?.stage === 'email' || pending?.stage === 'password') {
     if (!canEdit(env, m)) return tg.send(user, 'Only the mailbox manager or host can change credentials for this key.');
     if (command === '/email') return beginEmail(env, user, tg);
@@ -237,7 +257,8 @@ export async function handleUpdate(env, update, tg) {
       const changes = [stmt(env, `INSERT INTO credentials(key_id,email_cipher,password_cipher,revision) VALUES(?,?,?,?)
         ON CONFLICT(key_id) DO UPDATE SET email_cipher=excluded.email_cipher,password_cipher=excluded.password_cipher,
         last_checked=CASE WHEN revision=excluded.revision THEN last_checked ELSE NULL END,
-        revision=excluded.revision,paused=0,failures=0,status='Credentials updated; awaiting check',lease=NULL,lease_until=0,last_slot=NULL`,
+        revision=excluded.revision,paused=0,failures=0,status='Credentials updated; awaiting check',lease=NULL,lease_until=0,last_slot=NULL,
+        last_attempt=NULL,last_finished=NULL,last_result=NULL`,
         m.key_id, await seal(env, `email:${m.key_id}`, email), await seal(env, `password:${m.key_id}`, text), revision),
         stmt(env, 'DELETE FROM states WHERE user_id=?', user),
         stmt(env, 'DELETE FROM push_subscriptions WHERE key_id=?', m.key_id)];
@@ -251,5 +272,5 @@ export async function handleUpdate(env, update, tg) {
         ' Existing unread emails will be included, and delivered emails will not normally repeat.');
     }
   }
-  return tg.send(user, 'Use /help for available commands.');
+  return showMenu(env,user,tg);
 }

@@ -133,3 +133,14 @@ Default capacity is ten active keys including Host, with up to five Telegram acc
 ## Dashboard installation shortcut
 
 When the Telegram token and other secrets are already stored in Cloudflare, deploy the current Worker code, set the two GitHub Actions secrets, and run **Connect Telegram bot** manually from Actions. The runner-authenticated `/internal/setup` route validates encryption, database access and the expected bot username before registering the fixed production callback URL. It refuses to replace an existing different webhook and never returns the bot token. This installation is bound to `RajasthanMail_bot` at `https://private-email-bot.answami99.workers.dev`. Setup also queues first checks for active accounts connected before this feature was installed, if they have never completed a check. With the dispatch secret configured, this can start mailbox polling and notification delivery through the separate first-check workflow. The connection workflow prints only public endpoint status/authentication schemes and aggregate setup counts.
+
+
+## Ten-minute schedule and button menu upgrade
+
+Apply `worker/migrations/0004_check_status.sql` before deploying the updated Worker. It adds latest-attempt, completion and result fields, conservatively backfills known successful scans, and changes the configured hours from 24/7 to weekday office hours.
+
+Deploy `ui.js` along with the other Worker modules and update `poll.yml`. The UTC cron expressions are `*/10 4-11 * * 1-5` and `0,10,20,30 12 * * 1-5`, covering 09:30–18:00 IST inclusive. Backend slot suppression must also use ten-minute intervals.
+
+Run **Connect Telegram bot** to set and read back default/user and host command menus. It also sends the enrolled host a button dashboard when no credential entry is pending. Existing users can send `/start` or `/menu` once to reveal their buttons.
+
+Acceptance: verify the host Last checks button shows the actual latest attempt and previous success separately, user Last check stays scoped to its own mailbox, Cancel exits entry safely, and success/failure/expired-run results remain distinct. A manual forced poll validates the new history fields even outside office hours. Real scheduled timing remains subject to GitHub delays.

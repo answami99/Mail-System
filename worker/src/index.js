@@ -3,6 +3,7 @@ import {handleUpdate} from './bot.js';
 import {jobs} from './jobs.js';
 import {queueInitial} from './initial.js';
 import {receivePush} from './push.js';
+import {showMenu, withMenus} from './ui.js';
 
 export async function handle(request, env, tg = new Telegram(env)) {
   const path = new URL(request.url).pathname;
@@ -56,6 +57,18 @@ export async function handle(request, env, tg = new Telegram(env)) {
       setupStage = 'telegram-webhook-verify';
       const info = await tg.call('getWebhookInfo',{});
       if (info.url !== url || info.max_connections !== 1) return json({error:'Webhook verification failed'},503);
+      setupStage = 'telegram-menus';
+      const commands=[{command:'start',description:'Open your mailbox menu'},{command:'menu',description:'Show the button menu'},
+        {command:'status',description:'View your mailbox status'},{command:'lastcheck',description:'View the latest check result'},
+        {command:'help',description:'How to use this bot'},{command:'cancel',description:'Cancel the current step'}];
+      await tg.call('setMyCommands',{commands});
+      await tg.call('setMyCommands',{scope:{type:'chat',chat_id:Number(env.HOST_TELEGRAM_ID)},commands:[...commands,
+        {command:'new',description:'Create a named access code'},{command:'keys',description:'Manage people and access codes'}]});
+      const publicCommands=await tg.call('getMyCommands',{});
+      const hostCommands=await tg.call('getMyCommands',{scope:{type:'chat',chat_id:Number(env.HOST_TELEGRAM_ID)}});
+      if(!Array.isArray(publicCommands) || !Array.isArray(hostCommands) ||
+        !commands.every(c=>publicCommands.some(x=>x.command===c.command)) ||
+        !['new','keys','lastcheck'].every(c=>hostCommands.some(x=>x.command===c))) throw new Error('Menu verification failed');
       // Backfill accounts connected before the first-check feature was deployed.
       // Completed checks are never re-enqueued by this idempotent setup operation.
       setupStage = 'initial-check';
@@ -66,7 +79,11 @@ export async function handle(request, env, tg = new Telegram(env)) {
           AND i.revision=c.revision AND i.state='done') LIMIT 50`);
       let requested = 0;
       for (const account of waiting) requested += Number(await queueInitial(env,account.key_id,account.user_id,account.revision));
-      return json({ok:true,bot:'RajasthanMail_bot',webhook_configured:true,
+      const host=await first(env,`SELECT m.user_id FROM members m JOIN access_keys k ON k.id=m.key_id
+        WHERE m.user_id=? AND m.key_id='host' AND m.active=1 AND m.blocked=0 AND k.active=1`,Number(env.HOST_TELEGRAM_ID));
+      const hostMenuSent=!!host && !await first(env,'SELECT user_id FROM states WHERE user_id=? AND expires>?',host.user_id,now());
+      if(hostMenuSent) await showMenu(env,host.user_id,withMenus(env,tg));
+      return json({ok:true,bot:'RajasthanMail_bot',webhook_configured:true,menus_configured:true,host_menu_sent:hostMenuSent,
         initial_checks_queued:waiting.length,initial_checks_requested:requested});
     }
     if (path !== '/telegram') return await jobs(env, path, body, tg);

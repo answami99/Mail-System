@@ -5,9 +5,9 @@ import {pushControl, pushWindow, dispatchPush} from './push.js';
 export function slotAt(date = new Date(), always = false) {
   const local = new Date(date.getTime() + 330 * 60000);
   const day = local.getUTCDay(), minute = local.getUTCHours() * 60 + local.getUTCMinutes();
-  // A late GitHub run can service the most recent slot until 18:29 IST.
-  if (!always && (day === 0 || day === 6 || minute < 570 || minute >= 1110)) return null;
-  const slot = Math.floor(minute / 30) * 30;
+  // Allow a delayed final run to service the 18:00 slot until 18:09 IST.
+  if (!always && (day === 0 || day === 6 || minute < 570 || minute >= 1090)) return null;
+  const slot = Math.floor(minute / 10) * 10;
   return `${local.toISOString().slice(0, 10)}T${String(Math.floor(slot / 60)).padStart(2, '0')}:${String(slot % 60).padStart(2, '0')}+05:30`;
 }
 export async function validLease(env, body) {
@@ -64,13 +64,13 @@ export async function jobs(env, route, body, tg) {
       if (!initial || !body.slot.startsWith('initial:')) return json({error:'Unavailable'},409);
     } else if (body.slot.startsWith('initial:')) return json({error:'Initial request required'},400);
     const lease = crypto.randomUUID();
-    const c = await first(env, `UPDATE credentials SET lease=?,lease_until=?,
+    const c = await first(env, `UPDATE credentials SET lease=?,lease_until=?,last_attempt=?,last_finished=NULL,last_result='running',
       push_generation=(SELECT generation FROM push_subscriptions WHERE key_id=credentials.key_id AND revision=credentials.revision),
       push_seq=(SELECT event_seq FROM push_subscriptions WHERE key_id=credentials.key_id AND revision=credentials.revision)
       WHERE key_id=? AND revision=?
       AND lease_until<? AND paused=0 AND (last_slot IS NULL OR last_slot<>?)
       AND EXISTS(SELECT 1 FROM access_keys WHERE id=key_id AND active=1) RETURNING *`,
-      lease, now() + 900, body.key_id, body.revision, now(), body.slot);
+      lease, now() + 900, now(), body.key_id, body.revision, now(), body.slot);
     if (!c) return json({error:'Unavailable'}, 409);
     if (initial) await run(env, 'UPDATE initial_checks SET lease=? WHERE id=?',lease,initial.id);
     return json({key_id: c.key_id, revision:c.revision, lease,
@@ -114,11 +114,11 @@ export async function jobs(env, route, body, tg) {
       partial:'Partial check; remaining unread mail will be checked on a future run', success:'Check completed'};
     if (!Object.hasOwn(statuses, body.result)) return json({error:'Invalid result'}, 400);
     const fatal = ['auth', 'protocol'].includes(body.result);
-    const c = await first(env, `UPDATE credentials SET lease=NULL,lease_until=0,last_slot=CASE WHEN ?=1 THEN last_slot ELSE ? END,status=?,
+    const c = await first(env, `UPDATE credentials SET lease=NULL,lease_until=0,last_finished=?,last_result=?,last_slot=CASE WHEN ?=1 THEN last_slot ELSE ? END,status=?,
       last_checked=CASE WHEN ?='success' THEN ? ELSE last_checked END,
       failures=CASE WHEN ?='success' THEN 0 WHEN ?=1 THEN failures+1 ELSE failures END,
       paused=CASE WHEN ?=1 AND failures>=2 THEN 1 ELSE paused END WHERE key_id=? AND lease=? RETURNING paused,failures`,
-      leaseInfo.initial_request ? 1 : 0, body.slot, statuses[body.result], body.result, now(), body.result, fatal ? 1 : 0, fatal ? 1 : 0, body.key_id, body.lease);
+      now(),body.result,leaseInfo.initial_request ? 1 : 0, body.slot, statuses[body.result], body.result, now(), body.result, fatal ? 1 : 0, fatal ? 1 : 0, body.key_id, body.lease);
     if (body.result === 'success' && !leaseInfo.initial_request && leaseInfo.push_generation) await run(env,
       'UPDATE push_subscriptions SET done_seq=MAX(done_seq,?) WHERE key_id=? AND revision=? AND generation=?',
       leaseInfo.push_seq || 0,body.key_id,body.revision,leaseInfo.push_generation);
