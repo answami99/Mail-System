@@ -141,21 +141,27 @@ export async function jobs(env, route, body, tg) {
     const rows = await all(env, `SELECT d.id FROM deliveries d JOIN messages msg ON msg.id=d.message_id
       JOIN credentials c ON c.key_id=msg.key_id AND c.revision=msg.revision
       JOIN access_keys k ON k.id=msg.key_id JOIN members m ON m.user_id=d.user_id AND m.key_id=msg.key_id
-      WHERE d.state<>'sent' AND d.lease_until<? AND d.retry_at<=? AND k.active=1 AND m.active=1 AND m.blocked=0
+      WHERE d.state<>'sent' AND d.lease_until<? AND d.retry_at<=? AND k.active=1 AND m.active=1 AND m.blocked=0 AND m.notifications_paused=0
       AND (? IS NULL OR d.user_id=(SELECT user_id FROM initial_checks WHERE id=?))
       ORDER BY msg.created_at,d.id LIMIT 25`, now(), now(),body.initial_request || null,body.initial_request || null);
     return json({ids:rows.map(r => r.id)});
   }
   if (route === '/internal/deliver') {
     const d = await first(env, `UPDATE deliveries SET state='sending',lease_until=? WHERE id=? AND state<>'sent'
-      AND lease_until<? AND retry_at<=? RETURNING *`, now() + 120, body.id, now(), now());
+      AND lease_until<? AND retry_at<=? AND EXISTS(SELECT 1 FROM members m JOIN messages msg ON msg.key_id=m.key_id
+        WHERE msg.id=deliveries.message_id AND m.user_id=deliveries.user_id AND m.active=1 AND m.blocked=0 AND m.notifications_paused=0)
+      RETURNING *`, now() + 120, body.id, now(), now());
     if (!d) return json({ok:true, skipped:true});
-    const msg = await first(env, `SELECT msg.* FROM messages msg JOIN access_keys k ON k.id=msg.key_id
+    const msg = await first(env, `SELECT msg.*,m.notifications_paused FROM messages msg JOIN access_keys k ON k.id=msg.key_id
       JOIN credentials c ON c.key_id=msg.key_id AND c.revision=msg.revision
       JOIN members m ON m.key_id=msg.key_id WHERE msg.id=? AND m.user_id=? AND k.active=1 AND m.active=1 AND m.blocked=0`, d.message_id, d.user_id);
     if (!msg?.payload) {
       await run(env, 'DELETE FROM deliveries WHERE id=? AND state<>\'sent\'', d.id);
       return json({ok:true, skipped:true});
+    }
+    if(msg.notifications_paused) {
+      await run(env,"UPDATE deliveries SET state='pending',lease_until=0 WHERE id=?",d.id);
+      return json({ok:true,skipped:true});
     }
     try {
       const result = await tg.email(d.user_id, await unseal(env, `message:${msg.id}`, msg.payload));

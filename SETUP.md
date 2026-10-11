@@ -108,8 +108,11 @@ Acceptance checks before inviting other people:
 | `/new Aditya` | Generate a non-expiring named 8-digit key. Share it privately. |
 | `/keys` | Show active keys, codes, IDs and active Telegram-account counts. |
 | `/members key-12345` | Show accounts enrolled with this key ID. |
-| `/remove 123456789` | Disable and block that Telegram account; it cannot simply redeem the key again. |
-| `/allow 123456789` | Unblock it; it must enter its key again. |
+| `/remove 123456789` | Remove that account's old code access; a different code may be used. |
+| `/allow 123456789` | Clear its code restrictions; it must enter an active code again. A separate blacklist still applies. |
+| `/blocked` | View and unblock blacklisted accounts using buttons. |
+| `/blacklist 123456789` | Block that Telegram account from all codes. |
+| `/unblacklist 123456789` | Remove the global block; separate code restrictions still apply. |
 | `/revoke key-12345` | Disable the key and erase its credentials and queued notifications. |
 | `/owner key-12345 123456789` | Give mailbox-management rights to an active member of that key. |
 | `/resume key-12345` | Resume checking after resolving a paused mailbox's access problem. |
@@ -142,5 +145,9 @@ Apply `worker/migrations/0004_check_status.sql` before deploying the updated Wor
 Deploy `ui.js` along with the other Worker modules and update `poll.yml`. The UTC cron expressions are `*/10 4-11 * * 1-5` and `0,10,20,30 12 * * 1-5`, covering 09:30–18:00 IST inclusive. Backend slot suppression must also use ten-minute intervals.
 
 Run **Connect Telegram bot** to set and read back default/user and host command menus. It also sends the enrolled host a button dashboard when no credential entry is pending. Existing users can send `/start` or `/menu` once to reveal their buttons.
+
+For the pause/leave upgrade, apply `worker/migrations/0005_user_notifications.sql` before deploying. All existing accounts default to notifications on. Run **Connect Telegram bot** again to publish the added `/pause`, `/resume_notifications` and `/stop` commands. Existing users open `/menu` once to refresh their keyboard. Verify with two accounts on one code: pause one, confirm only the other receives mail, resume and confirm the held queue is delivered. Leave requires confirmation; a last-member exit erases the stored login and cached metadata, while a shared mailbox remains connected for other members. Host remove/revoke controls attempt an immediate access-revoked notice and report delivery failures independently of access removal.
+
+Migration 0005 also creates per-code restrictions, an independent blacklist and retired code hashes. Existing removed accounts become restricted to their previous code. The host menu includes **Blocked accounts**, and each named organisation has **Delete permanently** and **Blacklist** actions for users, plus **Delete organisation permanently**. Deleted users can be allowed on that code again without restoring their erased data; different codes remain usable unless the account is blacklisted. Test permanent deletion with synthetic accounts/data only, not a real connected mailbox.
 
 Acceptance: verify the host Last checks button shows the actual latest attempt and previous success separately, user Last check stays scoped to its own mailbox, Cancel exits entry safely, and success/failure/expired-run results remain distinct. A manual forced poll validates the new history fields even outside office hours. Real scheduled timing remains subject to GitHub delays.

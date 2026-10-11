@@ -27,19 +27,31 @@ One notification per email per enrolled Telegram account. The body and attachmen
 - D1 stores encrypted credentials and queued notification metadata, plus delivery receipts. GitHub runners are temporary and do not store state in commits, caches or artifacts.
 - Retries retain queued notifications even if an email later becomes read. Completed delivery records normally prevent repeats. A new Telegram account receives the unread backlog at the next check.
 - Authentication/API failures pause the affected mailbox after three checks. Network errors retry next scheduled run. `/status` and host `/health` show failures and last successful check.
-- Revoking a key removes its credentials and queued metadata. Removing a user blocks re-enrollment until the host allows it. Already sent Telegram messages cannot be retracted by revocation; an in-flight send may complete.
+- Revoking a key removes its credentials and queued metadata. Removing a user blocks their old code until the host allows it; a different code may be used. A separate blacklist blocks all codes. Already sent Telegram messages cannot be retracted by revocation; an in-flight send may complete.
 
 ## Button menus and last-check results
 
 Open `/start` or `/menu` once to show the persistent button keyboard.
 
 - **Host:** Last checks, Manage access, Create code, My mailbox, Change email, Change password and Help. Named access views include account removal/allowing, mailbox manager transfer with confirmation, key revocation with confirmation and check details.
-- **User:** My mailbox, Last check and Help; mailbox managers also see Change email and Change password. Buttons retain the same server-side access checks as commands.
+- **User:** My mailbox, Last check, Pause/Resume notifications, Leave bot and Help; mailbox managers also see Change email and Change password. The host can also pause their own notifications. Buttons retain the same server-side access checks as commands.
 - **Entry prompts:** show a Cancel button. Help and navigation cannot accidentally be stored as a password or name. Commands remain available through `/commands`.
 
 **Last checks** shows every active key by name and distinguishes success, login/access failure, network failure, incomplete scan, running check and an interrupted/expired run. It includes the latest attempt time and last success in IST. Mailbox details show completion time and pending notifications. Older successes are not presented as the result of a later failed attempt. After twenty minutes without a reported attempt during office hours, a warning appears (with a twenty-minute grace period after opening). This warning is displayed when viewing status; it is not an independent watchdog.
 
 A successful check means the inbox scan completed. Telegram delivery happens afterward; pending notifications can remain even when the scan succeeded. Checks never mark messages read.
+
+**Pause notifications** affects only the requesting Telegram account. Mailbox checks and other recipients continue; encrypted queued notifications are retained and delivered after **Resume notifications**, during a later scheduled run. `/pause` and `/resume_notifications` are equivalent commands. An already in-flight notification may still arrive.
+
+**Leave bot** (`/stop`) asks for confirmation, then deletes that account's name, membership, delivery history/queue and first-check requests. It cancels an in-flight initial scan for that account. If no other active, unblocked members remain on the key, its saved credentials, push subscription and cached message metadata are deleted too. The named invitation code remains controlled by the host; the user can rejoin later with an active code. A shared mailbox remains connected for other members. When its manager leaves, the host must appoint a replacement; no new credential permissions are granted automatically. Outlook messages are untouched. Host enrollment cannot be removed through this user action.
+
+When the host removes an account, the bot blocks its old code before immediately attempting an **Access revoked** notice. Revoking a code notifies all currently connected members after access and mailbox data are removed. The host sees whether Telegram accepted the notices; a blocked bot or Telegram failure can prevent delivery without restoring access. Restrictions apply to the Telegram account, including all devices signed in to it.
+
+**Delete user permanently** erases their profile and notification history/queue, retaining only the Telegram ID + code restriction. That user cannot reuse the same code unless the host taps **Allow deleted account** in its management screen. A different active code works. This is separate from **Blacklist**, which blocks all codes and is reversible from the host's **Blocked accounts** button. Deleting an organisation does not clear a separate blacklist.
+
+**Delete organisation permanently** erases its code record, members, saved login, first-check requests and cached notification data. It is also available for revoked organisations in Manage access. The host must recreate the organisation to use it again. A peppered code hash is retained to prevent accidental reuse of the deleted code. Outlook email messages are never deleted by these actions. Permanent deletion and blacklisting show explicit confirmations; the host account/organisation is protected.
+
+Welcome and entry prompts use short text while retaining named invitations, the anti-misuse explanation, shared-mailbox ownership and password handling disclosures.
 
 ## Hosting choice and limits
 

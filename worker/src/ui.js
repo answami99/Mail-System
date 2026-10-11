@@ -4,10 +4,12 @@ export const scheduleText = 'Every 10 minutes · Mon–Fri, 09:30–18:00 IST';
 export const menuCommands = {
   '📬 My mailbox':'/status', '🕒 Last check':'/lastcheck', '🕒 Last checks':'/lastcheck',
   '👥 Manage access':'/keys', '➕ Create code':'/new',
+  '⛔ Blocked accounts':'/blocked',
   '✉️ Change email':'/email', '🔐 Change password':'/password',
+  '⏸ Pause notifications':'/pause', '▶️ Resume notifications':'/resume_notifications', '🚪 Leave bot':'/stop',
   '❓ Help':'/help', '🏠 Main menu':'/menu', '❌ Cancel':'/cancel', '🔑 Enter access code':'/start'
 };
-export const callbackCommands = {home:'/menu',status:'/status',lastcheck:'/lastcheck',
+export const callbackCommands = {home:'/menu',status:'/status',lastcheck:'/lastcheck',leave_confirm:'/leave_confirm',
   keys:'/keys',new:'/new',email:'/email',password:'/password',help:'/help',cancel:'/cancel'};
 const dateFormat = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'});
 export const istTime = value => value ? `${dateFormat.format(new Date(value*1000))} IST` : 'Not recorded yet';
@@ -15,11 +17,13 @@ export const istTime = value => value ? `${dateFormat.format(new Date(value*1000
 export async function keyboardFor(env,user) {
   const pending=await first(env,'SELECT stage FROM states WHERE user_id=? AND expires>?',user,now());
   if(pending) return {keyboard:[['❌ Cancel']],resize_keyboard:true,is_persistent:true,
-    input_field_placeholder:pending.stage==='password'?'Enter password privately':pending.stage==='email'?'Enter your full email address':pending.stage==='name'?'Enter your name':pending.stage==='new_key'?'Person or organisation name':'Enter your access code'};
+    input_field_placeholder:pending.stage==='password'?'Enter password privately':pending.stage==='email'?'Enter your full email address':pending.stage==='name'?'Enter your name':pending.stage==='new_key'?'Person or organisation name':pending.stage==='leave'?'Confirm leave above, or Cancel':'Enter your access code'};
   const m=await member(env,user);
-  const keyboard=!m?[['🔑 Enter access code'],['❓ Help']]:isHost(env,user)?
-    [['🕒 Last checks','👥 Manage access'],['➕ Create code','📬 My mailbox'],['✉️ Change email','🔐 Change password'],['❓ Help']]:
-    [['📬 My mailbox','🕒 Last check'],...(canEdit(env,m)?[['✉️ Change email','🔐 Change password']]:[]),['❓ Help']];
+  const blocked=!m && !!await first(env,'SELECT user_id FROM blacklist WHERE user_id=?',user);
+  const notificationButton=m?.notifications_paused?'▶️ Resume notifications':'⏸ Pause notifications';
+  const keyboard=!m?(blocked?[['❓ Help']]:[['🔑 Enter access code'],['❓ Help']]):isHost(env,user)?
+    [['🕒 Last checks','👥 Manage access'],['➕ Create code','📬 My mailbox'],['✉️ Change email','🔐 Change password'],[notificationButton,'⛔ Blocked accounts'],['❓ Help']]:
+    [['📬 My mailbox','🕒 Last check'],...(canEdit(env,m)?[['✉️ Change email','🔐 Change password']]:[]),[notificationButton,'🚪 Leave bot'],['❓ Help']];
   return {keyboard,resize_keyboard:true,is_persistent:true,input_field_placeholder:m?'Choose an option below':'Enter the private access code from your host'};
 }
 
@@ -30,15 +34,18 @@ export function withMenus(env,tg) {
 }
 export async function showMenu(env,user,tg) {
   const m=await member(env,user);
+  if(!m && await first(env,'SELECT user_id FROM blacklist WHERE user_id=?',user)) return showHelp(env,user,tg);
   if(!m) return tg.send(user,'Welcome to Rajasthan Mail. Tap Enter access code to join using the private code supplied by your host.');
-  return tg.send(user,`Hello, ${m.label}!\n${isHost(env,user)?'Host dashboard':'Your mailbox: '+m.name}\n\n${scheduleText}\nChoose an option using the buttons below.`,await keyboardFor(env,user));
+  return tg.send(user,`Hello, ${m.label}!\n${isHost(env,user)?'Host dashboard':'Your mailbox: '+m.name}\nNotifications: ${m.notifications_paused?'paused for your Telegram account':'on'}\n\n${scheduleText}\nChoose an option using the buttons below.`,await keyboardFor(env,user));
 }
 export async function showHelp(env,user,tg) {
   const m=await member(env,user);
+  if(!m && await first(env,'SELECT user_id FROM blacklist WHERE user_id=?',user)) return tg.send(user,'Access revoked. This Telegram account is blacklisted by the host and cannot join with any code. Contact the host to request removal from the blocked list.');
+  if(!m && await first(env,'SELECT user_id FROM key_blocks WHERE user_id=?',user)) return tg.send(user,'Access revoked for your previous code. Ask the host to allow it again or give you a different code. Your account is not blacklisted.');
   if(!m) return tg.send(user,'This is a private notification bot. Ask your host for an access code, then tap Enter access code. Your name is requested to identify your account and help prevent misuse.');
   return tg.send(user,`How to use Rajasthan Mail\n\n${isHost(env,user)?
-    '➕ Create code — enter a person or organisation name.\n👥 Manage access — choose a name to view accounts, change the mailbox manager, remove accounts or revoke a code.\n🕒 Last checks — see whether each mailbox check succeeded.\n':
-    '📬 My mailbox — see your connection and notification status.\n🕒 Last check — see the latest check result.\n'}${canEdit(env,m)?'✉️ Change email / 🔐 Change password — follow the private prompts.\n':''}\n${scheduleText}\nEach notification contains sender, subject and received time. Emails stay unread. Already read or moved emails are excluded.\n\nGitHub may delay checks. New accounts get a first check after connection. Use Cancel while entering details to stop. Commands remain available with /commands.`);
+    '➕ Create code — enter a person or organisation name.\n👥 Manage access — view accounts, change the manager, allow/remove access, permanently delete users or organisations, or blacklist an account.\n⛔ Blocked accounts — see the blacklist and unblock accounts.\n🕒 Last checks — see whether each mailbox check succeeded.\n':
+    '📬 My mailbox — see your connection and notification status.\n🕒 Last check — see the latest check result.\n'}${canEdit(env,m)?'✉️ Change email / 🔐 Change password — follow the private prompts.\n':''}⏸ Pause / ▶️ Resume notifications — stop delivery to your Telegram account temporarily. Queued notifications wait until you resume; shared mailbox checks continue.\n${isHost(env,user)?'':'🚪 Leave bot — disconnect your account after confirmation. You can rejoin later with an active access code.\n'}\n${scheduleText}\nEach notification contains sender, subject and received time. Emails stay unread. Already read or moved emails are excluded.\n\nGitHub may delay checks. New accounts get a first check after connection. Use Cancel while entering details to stop. Commands remain available with /commands.`);
 }
 export function checkOutcome(c) {
   if(!c?.status) return '⚪ Mailbox not connected';
@@ -64,7 +71,7 @@ export async function showMailbox(env,user,tg,keyId=null) {
     WHERE msg.key_id=? AND d.state<>'sent' AND m.active=1 AND m.blocked=0 AND (?=1 OR d.user_id=?)`,key,Number(!!keyId),user);
   const buttons=[[{text:'Refresh',callback_data:keyId?`check:${key}`:'menu:status'},{text:'Main menu',callback_data:'menu:home'}]];
   if(keyId && c.paused) buttons.unshift([{text:'Resume checks',callback_data:`resume:${key}`}]);
-  return tg.send(user,`${c.name}\n${checkOutcome(c)}\n\nLast attempt: ${istTime(c.last_attempt)}\nFinished: ${istTime(c.last_finished)}\nLast successful check: ${istTime(c.last_checked)}\nPending notifications: ${pending.n}${overdue(c)?'\n\n⚠️ No check reported in the last 20 minutes during office hours. Checks may be delayed.':''}\n\n${scheduleText}\nSuccess means the inbox scan completed; pending notifications are delivered separately.`,{inline_keyboard:buttons});
+  return tg.send(user,`${c.name}\n${checkOutcome(c)}${keyId?'':`\nNotifications: ${m.notifications_paused?'paused for your Telegram account':'on'}`}\n\nLast attempt: ${istTime(c.last_attempt)}\nFinished: ${istTime(c.last_finished)}\nLast successful check: ${istTime(c.last_checked)}\nPending notifications: ${pending.n}${overdue(c)?'\n\n⚠️ No check reported in the last 20 minutes during office hours. Checks may be delayed.':''}\n\n${scheduleText}\nSuccess means the inbox scan completed; pending notifications are delivered separately.`,{inline_keyboard:buttons});
 }
 export async function showLastChecks(env,user,tg) {
   const m=await member(env,user);

@@ -10,7 +10,7 @@ import {queueInitial} from '../src/initial.js';
 
 // Real SQLite constraints/transactions behind the small D1 async interface.
 class D1 {
-  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql','0004_check_status.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
+  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql','0004_check_status.sql','0005_user_notifications.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
   prepare(sql) {
     const query = this.db.prepare(sql);
     const make = args => ({
@@ -407,7 +407,7 @@ test('named invitation welcomes the organisation and requires a declared name be
   const code=await unseal(s.env,`key:${key.id}`,key.code_cipher);
   await s.rawChat(2,`/start ${code}`);
   assert.match(s.sent.at(-1).text,/Welcome to Office \/ Jaipur!/);
-  assert.match(s.sent.at(-1).text,/host can see this name.*prevent misuse/);
+  assert.match(s.sent.at(-1).text,/host sees it.*prevent misuse/);
   assert.equal(await first(s.env,'SELECT * FROM members WHERE user_id=2'),null);
   assert.equal(await first(s.env,'SELECT * FROM credentials WHERE key_id=?',key.id),null);
   await s.rawChat(2,'   ');assert.equal((await first(s.env,'SELECT stage FROM states WHERE user_id=2')).stage,'name');
@@ -522,4 +522,141 @@ test('changing credentials clears latest-attempt state and stale finishes cannot
   assert.equal(c.last_attempt,null);assert.equal(c.last_result,null);assert.equal(c.last_finished,null);
   assert.equal((await s.api('/internal/finish',{...lease,slot:'manual:test',result:'success'})).status,409);
   c=await first(s.env,'SELECT last_result FROM credentials WHERE key_id=?',key.id);assert.equal(c.last_result,null);
+});
+
+test('pause is per recipient, blocks a previously fetched delivery and retains the queue for resume',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');await s.chat(4,`/start ${key.code}`);
+  const lease=await s.claim(key);await s.api('/internal/ingest',{...lease,email});
+  const held=await first(s.env,'SELECT id FROM deliveries WHERE user_id=2');
+  await s.chat(2,'⏸ Pause notifications');
+  assert.equal((await first(s.env,'SELECT notifications_paused FROM members WHERE user_id=2')).notifications_paused,1);
+  assert(s.sent.at(-1).markup.keyboard.flat().includes('▶️ Resume notifications'));
+  assert(s.sent.at(-1).markup.keyboard.flat().includes('🚪 Leave bot'));
+  assert.equal((await s.api('/internal/deliver',{id:held.id})).body.skipped,true);
+  let ready=(await s.api('/internal/pending',{})).body.ids;assert.equal(ready.length,1);
+  await s.api('/internal/deliver',{id:ready[0]});
+  await s.api('/internal/jobs',{force:true}); // cleanup must retain the paused recipient's payload
+  assert((await first(s.env,'SELECT payload FROM messages')).payload);
+  await s.chat(2,'📬 My mailbox');assert.match(s.sent.at(-1).text,/Notifications: paused/);
+  await s.chat(2,'/start');assert.match(s.sent.at(-1).text,/Notifications: paused/);
+  await s.chat(4,'/resume_notifications');
+  assert.equal((await first(s.env,'SELECT notifications_paused FROM members WHERE user_id=2')).notifications_paused,1);
+  await s.chat(2,'▶️ Resume notifications');
+  ready=(await s.api('/internal/pending',{})).body.ids;assert.deepEqual(ready,[held.id]);
+  await s.api('/internal/deliver',{id:held.id});
+  assert.equal(s.sent.filter(x=>x.id===2&&x.text.startsWith('From:')).length,1);
+  assert.equal(s.sent.filter(x=>x.id===4&&x.text.startsWith('From:')).length,1);
+  assert.equal((await s.api('/internal/pending',{})).body.ids.length,0);
+});
+
+test('leaving requires private confirmation, preserves shared mailboxes and erases a last-member mailbox',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');await s.chat(4,`/start ${key.code}`);
+  const lease=await s.claim(key);await s.api('/internal/ingest',{...lease,email});
+  const callback=(user,data,id,type='private')=>s.api('/telegram',{update_id:id,callback_query:{id:`q${id}`,from:{id:user},message:{chat:{id:user,type}},data}});
+  await callback(2,'menu:leave_confirm',2100);assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'));
+  await s.chat(2,'🚪 Leave bot');assert.match(s.sent.at(-1).text,/saved mailbox login/);
+  await s.chat(2,'❌ Cancel');await callback(2,'menu:leave_confirm',2101);
+  assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'));
+  await s.chat(2,'🚪 Leave bot');await callback(2,'menu:leave_confirm',2102,'group');
+  assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'));
+  await callback(2,'menu:leave_confirm',2103);
+  assert.equal(await first(s.env,'SELECT * FROM members WHERE user_id=2'),null);
+  assert.equal(await first(s.env,'SELECT * FROM deliveries WHERE user_id=2'),null);
+  assert.equal(await first(s.env,'SELECT * FROM initial_checks WHERE user_id=2'),null);
+  assert(await first(s.env,'SELECT key_id FROM credentials WHERE key_id=?',key.id));
+  assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',key.id)).owner_id,null);
+  await s.chat(4,'/start');assert(!s.sent.at(-1).markup.keyboard.flat().includes('🔐 Change password'));
+  await s.chat(4,'🚪 Leave bot');await callback(4,'menu:leave_confirm',2104);
+  assert.equal(await first(s.env,'SELECT key_id FROM credentials WHERE key_id=?',key.id),null);
+  assert.equal(await first(s.env,'SELECT id FROM messages WHERE key_id=?',key.id),null);
+  assert.equal(await first(s.env,'SELECT id FROM initial_checks WHERE key_id=?',key.id),null);
+  assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,1);
+  assert(s.sent.at(-1).markup.keyboard.flat().includes('🔑 Enter access code'));
+  assert.equal((await s.api('/internal/ingest',{...lease,email})).status,409);
+  await s.chat(4,`/start ${key.code}`);assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=4'));
+  await s.chat(1,'/stop');assert.match(s.sent.at(-1).text,/host account stays connected/i);
+  assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=1'));
+});
+
+test('leaving cancels its in-flight first check without deleting another member or their credentials',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');await s.chat(4,`/start ${key.code}`);
+  const request=await first(s.env,'SELECT id FROM initial_checks WHERE user_id=4');
+  const batch=(await s.api('/internal/jobs',{initial:true})).body;
+  const lease=(await s.api('/internal/claim',{...batch.jobs.find(x=>x.initial_request===request.id),slot:batch.slot})).body;
+  await s.chat(4,'🚪 Leave bot');
+  await s.api('/telegram',{update_id:2200,callback_query:{id:'exit',from:{id:4},message:{chat:{id:4,type:'private'}},data:'menu:leave_confirm'}});
+  assert.equal((await s.api('/internal/ingest',{...lease,email})).status,409);
+  assert(await first(s.env,'SELECT key_id FROM credentials WHERE key_id=?',key.id));
+  assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'));
+  assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',key.id)).owner_id,2);
+});
+
+test('host revocation sends immediate notices after access is blocked and reports undeliverable notices',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');await s.chat(4,`/start ${key.code}`);
+  await s.chat(1,'/remove 2');
+  const notice=s.sent.find(x=>x.id===2&&x.text.startsWith('Access revoked'));assert(notice);
+  assert.match(notice.text,/blocked by the host/);assert(notice.markup.keyboard.flat().includes('🔑 Enter access code'));
+  assert.equal((await first(s.env,'SELECT blocked FROM members WHERE user_id=2')).blocked,1);
+  await s.chat(2,'❓ Help');assert.match(s.sent.at(-1).text,/Access revoked/);
+  await s.chat(1,`/revoke ${key.id}`);
+  assert(s.sent.some(x=>x.id===4&&x.text.startsWith('Access revoked')));
+  assert.match(s.sent.at(-1).text,/1\/1/);
+  assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,0);
+  const second=await s.enroll(3,'Bob'),send=s.tg.send;
+  s.tg.send=async(id,...args)=>{if(id===3) throw new Error('Blocked bot');return send(id,...args);};
+  assert.equal((await s.chat(1,`/revoke ${second.id}`)).status,200);
+  assert.match(s.sent.at(-1).text,/0\/1/);assert.match(s.sent.at(-1).text,/could not be delivered/);
+  assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',second.id)).active,0);
+});
+
+test('host can permanently erase active or revoked organisations without deleting another key or the host',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),other=await s.enroll(3,'Bob');
+  await s.chat(4,`/start ${key.code}`);const lease=await s.claim(key);await s.api('/internal/ingest',{...lease,email});
+  const callback=(user,data,id)=>s.api('/telegram',{update_id:id,callback_query:{id:`q${id}`,from:{id:user},message:{chat:{id:user,type:'private'}},data}});
+  await callback(2,`deleteorg:${key.id}:confirm`,2300);assert(await first(s.env,'SELECT id FROM access_keys WHERE id=?',key.id));
+  await callback(1,`deleteorg:${key.id}`,2301);assert.match(s.sent.at(-1).text,/This cannot be undone/);
+  assert(await first(s.env,'SELECT id FROM access_keys WHERE id=?',key.id));
+  await callback(1,`deleteorg:${key.id}:confirm`,2302);
+  assert.equal(await first(s.env,'SELECT id FROM access_keys WHERE id=?',key.id),null);
+  assert.equal(await first(s.env,'SELECT user_id FROM members WHERE key_id=?',key.id),null);
+  assert.equal(await first(s.env,'SELECT key_id FROM credentials WHERE key_id=?',key.id),null);
+  assert.equal(await first(s.env,'SELECT id FROM messages WHERE key_id=?',key.id),null);
+  assert(s.sent.some(x=>x.id===2&&/permanently deleted your organisation/.test(x.text)));
+  assert(s.sent.some(x=>x.id===4&&/permanently deleted your organisation/.test(x.text)));
+  assert(await first(s.env,'SELECT key_id FROM credentials WHERE key_id=?',other.id));
+  assert.equal((await s.api('/internal/known',lease)).status,409);
+  await s.chat(2,`/start ${key.code}`);assert.equal(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'),null);
+  await callback(1,'deleteorg:host:confirm',2303);assert(await first(s.env,"SELECT id FROM access_keys WHERE id='host'"));
+  await s.chat(1,`/revoke ${other.id}`);await s.chat(1,'👥 Manage access');assert.match(s.sent.at(-1).text,/Bob\nKey: revoked/);
+  await callback(1,`members:${other.id}`,2304);assert(s.sent.at(-1).markup.inline_keyboard.flat().some(b=>b.text==='Delete organisation permanently'));
+  await callback(1,`deleteorg:${other.id}:confirm`,2305);assert.equal(await first(s.env,'SELECT id FROM access_keys WHERE id=?',other.id),null);
+});
+
+test('permanent user deletion restricts only its old code, host can allow it, and blacklist is independent',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),other=await s.enroll(3,'Bob');await s.chat(4,`/start ${key.code}`);
+  const callback=(user,data,id)=>s.api('/telegram',{update_id:id,callback_query:{id:`q${id}`,from:{id:user},message:{chat:{id:user,type:'private'}},data}});
+  await callback(2,`deleteuserconfirm:${key.id}:4`,2400);assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=4'));
+  await callback(1,`deleteuser:${key.id}:2`,2401);assert.match(s.sent.at(-1).text,/does not blacklist/);
+  assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'));
+  await callback(1,`deleteuserconfirm:${key.id}:2`,2402);
+  assert.equal(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'),null);
+  assert(await first(s.env,'SELECT user_id FROM key_blocks WHERE user_id=2 AND key_id=?',key.id));
+  assert.equal(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=2'),null);
+  await s.chat(5,`/start ${key.code}`);assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',key.id)).owner_id,null);
+  assert(!s.sent.at(-1).markup.keyboard.flat().includes('🔐 Change password'));
+  await s.chat(2,`/start ${key.code}`);assert.equal(await first(s.env,'SELECT user_id FROM members WHERE user_id=2'),null);
+  await s.chat(2,`/start ${other.code}`);assert.equal((await first(s.env,'SELECT key_id FROM members WHERE user_id=2')).key_id,other.id);
+  await callback(1,`members:${key.id}`,2403);assert(s.sent.at(-1).markup.inline_keyboard.flat().some(b=>b.text==='Allow deleted account 2'));
+  await callback(1,`allowdeleted:${key.id}:2`,2404);assert.equal(await first(s.env,'SELECT user_id FROM key_blocks WHERE user_id=2'),null);
+  await callback(1,`blacklist:${other.id}:2`,2405);assert.match(s.sent.at(-1).text,/every access code/);
+  assert.equal(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=2'),null);
+  await callback(1,`blacklistconfirm:${other.id}:2`,2406);assert(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=2'));
+  await s.chat(2,`/start ${key.code}`);assert.match(s.sent.at(-1).text,/blacklisted/);
+  await s.chat(2,`/start ${other.code}`);assert.equal((await first(s.env,'SELECT active FROM members WHERE user_id=2')).active,0);
+  await s.chat(1,'⛔ Blocked accounts');assert(s.sent.at(-1).markup.inline_keyboard.flat().some(b=>b.callback_data==='unblacklist:2'));
+  await callback(4,'unblacklist:2',2407);assert(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=2'));
+  await callback(1,'unblacklist:2',2408);assert.equal(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=2'),null);
+  await s.chat(2,`/start ${key.code}`);assert.equal((await first(s.env,'SELECT key_id FROM members WHERE user_id=2')).key_id,key.id);
+  await callback(1,'deleteuserconfirm:host:1',2409);assert(await first(s.env,'SELECT user_id FROM members WHERE user_id=1'));
+  await s.chat(1,'/blacklist 1');assert.equal(await first(s.env,'SELECT user_id FROM blacklist WHERE user_id=1'),null);
 });

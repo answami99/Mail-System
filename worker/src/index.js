@@ -60,15 +60,18 @@ export async function handle(request, env, tg = new Telegram(env)) {
       setupStage = 'telegram-menus';
       const commands=[{command:'start',description:'Open your mailbox menu'},{command:'menu',description:'Show the button menu'},
         {command:'status',description:'View your mailbox status'},{command:'lastcheck',description:'View the latest check result'},
+        {command:'pause',description:'Pause your email notifications'},{command:'resume_notifications',description:'Resume your email notifications'},
+        {command:'stop',description:'Leave the bot after confirmation'},
         {command:'help',description:'How to use this bot'},{command:'cancel',description:'Cancel the current step'}];
       await tg.call('setMyCommands',{commands});
       await tg.call('setMyCommands',{scope:{type:'chat',chat_id:Number(env.HOST_TELEGRAM_ID)},commands:[...commands,
-        {command:'new',description:'Create a named access code'},{command:'keys',description:'Manage people and access codes'}]});
+        {command:'new',description:'Create a named access code'},{command:'keys',description:'Manage people and access codes'},
+        {command:'blocked',description:'Manage blacklisted accounts'}]});
       const publicCommands=await tg.call('getMyCommands',{});
       const hostCommands=await tg.call('getMyCommands',{scope:{type:'chat',chat_id:Number(env.HOST_TELEGRAM_ID)}});
       if(!Array.isArray(publicCommands) || !Array.isArray(hostCommands) ||
         !commands.every(c=>publicCommands.some(x=>x.command===c.command)) ||
-        !['new','keys','lastcheck'].every(c=>hostCommands.some(x=>x.command===c))) throw new Error('Menu verification failed');
+        ![...commands.map(c=>c.command),'new','keys','blocked'].every(c=>hostCommands.some(x=>x.command===c))) throw new Error('Menu verification failed');
       // Backfill accounts connected before the first-check feature was deployed.
       // Completed checks are never re-enqueued by this idempotent setup operation.
       setupStage = 'initial-check';
