@@ -2,7 +2,7 @@
 
 Repository: [answami99/Mail-System](https://github.com/answami99/Mail-System) · Telegram: [@RajasthanMail_bot](https://t.me/RajasthanMail_bot)
 
-Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Built locally; not deployed or connected to a real mailbox.** Live Exchange API compatibility and free-tier capacity still need verification.
+Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed and Telegram webhook connected.** Host mailbox enrollment, live Exchange API compatibility, end-to-end delivery and free-tier capacity still need verification.
 
 ## What a notification looks like
 
