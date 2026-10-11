@@ -1,6 +1,6 @@
 # Deployment and first live test
 
-The backend, Telegram webhook, host enrollment, and automatic GitHub first-check dispatch are deployed and verified. **Mail delivery is not working yet: Exchange rejects the authenticated EWS request.** The steps below document installation and acceptance checks. Never paste secrets into a chat, commit, issue, workflow file, or command-line argument.
+The backend, Telegram webhook, host enrollment, automatic GitHub first-check dispatch, and live EWS access for the host mailbox are deployed and verified. **The live delivery test sent three notifications with sender, subject and IST time, preserved unread status, and sent zero duplicates on a repeat check.** The host confirmed all three Telegram messages were correct. Scheduled execution and sustained quota usage remain to be observed. The steps below document installation and acceptance checks. Never paste secrets into a chat, commit, issue, workflow file, or command-line argument.
 
 ## 1. Verify Exchange access before inviting anyone
 
@@ -12,9 +12,9 @@ python3 -m venv .venv
 .venv/bin/python -m poller.run --probe
 ```
 
-The probe prompts for your email and password (password hidden). It contacts only the configured Rajasthan EWS endpoint, counts unread Inbox messages, and does not send anything to Telegram. The current endpoint is `https://mail.rajasthan.gov.in/EWS/Exchange.asmx`; this is the standard candidate, **not an endpoint confirmed available for your mailbox**. NTLM is the default authentication method. If your administrator specifies Basic authentication over HTTPS, set `EWS_AUTH_TYPE=BASIC` locally and as a GitHub repository variable. Do not repeatedly guess settings or disable certificate verification.
+The probe prompts for your email and password (password hidden). It contacts only the configured Rajasthan EWS endpoint, counts unread Inbox messages, and does not send anything to Telegram. The current endpoint is `https://mail.rajasthan.gov.in/EWS/Exchange.asmx`; NTLM access was verified from GitHub for the host mailbox on 11 October 2026. Each additional mailbox must be validated separately. If your administrator specifies Basic authentication over HTTPS, set `EWS_AUTH_TYPE=BASIC` locally and as a GitHub repository variable. Do not repeatedly guess settings or disable certificate verification.
 
-If the probe fails, stop deployment of mailbox polling and establish the supported endpoint/authentication with the mail administrator. Web login and Exchange API login are different paths. The implementation does not yet automate the OWA website. Local dependency installation was blocked by network/DNS restrictions in the build environment, so neither an installed-library integration test nor a live mailbox test was completed there.
+If the probe fails, correct the saved credentials or establish the supported endpoint/authentication with the mail administrator before inviting that mailbox. Web login and Exchange API login are different paths. The implementation does not automate the OWA website. Local dependency installation was blocked by network/DNS restrictions in the build environment; live EWS access was instead verified on the GitHub runner in [run 38123247084](https://github.com/answami99/Mail-System/actions/runs/38123247084).
 
 ## 2. Create and configure your Telegram bot
 

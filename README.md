@@ -2,7 +2,7 @@
 
 Repository: [answami99/Mail-System](https://github.com/answami99/Mail-System) · Telegram: [@RajasthanMail_bot](https://t.me/RajasthanMail_bot)
 
-Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, Telegram webhook and automatic first-check dispatch verified.** The live Exchange request currently fails authentication; email delivery and free-tier capacity are not yet verified.
+Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, and live notification delivery verified on 11 October 2026.** Correcting the saved password resolved the Exchange login failure. The live test delivered three notifications, preserved all three unread emails, and sent zero duplicates on a repeat scan. Telegram webhook and automatic first-check dispatch are also verified. An actual scheduled run and sustained free-tier usage still need observation.
 
 ## What a notification looks like
 
@@ -57,7 +57,8 @@ No password viewing command, mailbox contents endpoint for users, or body collec
 
 ## Known practical limits
 
-- **Live EWS login is not working yet.** A public endpoint check from GitHub reaches EWS and receives HTTP 401 with NTLM advertised. The authenticated check returns `UnauthorizedError`; this can involve credentials, login-name format, or API access policy. Successful OWA login does not prove EWS access. This implementation has no OWA-browser fallback; an administrator-supported method or a separately tested connector is needed if EWS access cannot be established.
+- **Live EWS access is verified for the host mailbox.** First-check run [38123247084](https://github.com/answami99/Mail-System/actions/runs/38123247084) authenticated using NTLM and completed one unread-inbox scan with no errors. Earlier authentication failures resulted from an incorrect saved password. Other mailboxes still need their own successful check. This implementation uses EWS and has no OWA-browser fallback.
+- **Live delivery and repeat prevention passed.** [Poll run 38123430666, attempt 1](https://github.com/answami99/Mail-System/actions/runs/38123430666/attempts/1) found and delivered three unread emails. OWA still showed three unread emails afterward, and the host confirmed the sender/subject/timestamp notifications contained no body. Attempt 2 queued and delivered zero messages while those emails remained unread. These checks validate this mailbox and sample; they do not establish exactly-once delivery under all failures.
 - An EWS read-only API request leaves unread flags unchanged; the full mailbox password itself is not a read-only credential.
 - Exactly-once delivery cannot be guaranteed across Telegram and D1. If Telegram accepts a send but the response/receipt write is lost, a retry can produce a duplicate. The implementation favors retry over silent loss.
 - Revoking data on the host cannot delete copies already received on users' devices. `protect_content` discourages forwarding/saving but cannot stop every form of copying.
