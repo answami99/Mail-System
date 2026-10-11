@@ -75,9 +75,11 @@ export class Telegram {
     try {
       response = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
         method: 'POST', headers: form ? undefined : {'Content-Type': 'application/json'},
-        body: form ? data : JSON.stringify(data), signal: AbortSignal.timeout(15000), redirect: 'error'
+        body: form ? data : JSON.stringify(data), signal: AbortSignal.timeout(15000), redirect: 'manual'
       });
     } catch { throw new TelegramError(0); }
+    // Workerd supports manual redirects. Never follow a redirect with a bot token.
+    if (response.status >= 300 && response.status < 400) throw new TelegramError(response.status);
     let result;
     try { result = await response.json(); } catch { throw new TelegramError(response.status); }
     if (!result.ok) throw new TelegramError(result.error_code, result.parameters?.retry_after || 60);
