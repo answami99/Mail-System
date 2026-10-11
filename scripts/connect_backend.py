@@ -16,7 +16,7 @@ def main():
         print('Backend secrets are missing or invalid.')
         return 1
     request = Request(origin + '/internal/setup', data=b'{}', method='POST',
-                      headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+                      headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'User-Agent': 'RajasthanMailNotifier/1.0 (+https://github.com/answami99/Mail-System)'})
     try:
         with build_opener(NoRedirect).open(request, timeout=90) as response:
             result = json.load(response)
@@ -34,7 +34,7 @@ def main():
         print('Cloudflare challenge:', error.headers.get('cf-mitigated') == 'challenge')
         # Public health diagnostic sends no credentials and can safely expose a bounded error page.
         try:
-            with build_opener(NoRedirect).open(origin + '/healthz',timeout=15) as health:
+            with build_opener(NoRedirect).open(Request(origin + '/healthz',headers={'User-Agent':'RajasthanMailNotifier/1.0 (+https://github.com/answami99/Mail-System)'}),timeout=15) as health:
                 print('Public health HTTP status:',health.status)
         except HTTPError as public_error:
             text=public_error.read(800).decode('utf-8','replace').replace(token,'[redacted]')

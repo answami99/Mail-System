@@ -34,7 +34,7 @@ class Backend:
 
     def post(self, route, data):
         request = Request(self.base + '/internal/' + route, method='POST', data=json.dumps(data).encode(),
-                          headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json'})
+                          headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json', 'User-Agent': 'RajasthanMailNotifier/1.0 (+https://github.com/answami99/Mail-System)'})
         for attempt in range(3):
             try:
                 with self.opener.open(request, timeout=45) as response:
