@@ -1,9 +1,29 @@
 """EWS adapter. Requires live validation against Rajasthan's server before launch."""
 from hashlib import sha256
 from zoneinfo import ZoneInfo
+import base64
 import os
 
 EWS_ENDPOINT = 'https://mail.rajasthan.gov.in/EWS/Exchange.asmx'
+CLIENT_AGENT = 'RajasthanMailNotifier/1.0 (+https://github.com/answami99/Mail-System)'
+
+
+def transport_event(request, response):
+    """Return only an allowlisted status/stage, never headers, tokens or content."""
+    authorization = request.headers.get('Authorization', '')
+    stage = 'unauthenticated'
+    if authorization.startswith('NTLM '):
+        stage = 'ntlm-unknown'
+        try:
+            token = base64.b64decode(authorization[5:], validate=True)
+            if token[:8] == b'NTLMSSP\x00':
+                stage = {1: 'ntlm-negotiate', 3: 'ntlm-authenticate'}.get(int.from_bytes(token[8:12], 'little'), stage)
+        except Exception:
+            pass
+    elif authorization:
+        stage = 'other-authentication'
+    status = response.status_code
+    return f'{stage}:HTTP{status}' if type(status) is int and 100 <= status <= 599 else f'{stage}:HTTPunknown'
 
 
 def message_key(key_id, revision, source_id):
@@ -13,10 +33,20 @@ def message_key(key_id, revision, source_id):
 def connect(email, password):
     from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM, BASIC, FailFast
     from exchangelib.protocol import BaseProtocol
+    from requests.adapters import HTTPAdapter
     # Do not disable TLS verification, autodiscover to another host, or impersonate another mailbox.
     if not email.lower().endswith('@rajasthan.gov.in'):
         raise ValueError('Unsupported mailbox domain')
     BaseProtocol.TIMEOUT = 30
+    BaseProtocol.USERAGENT = CLIENT_AGENT
+    if os.environ.get('EWS_DIAGNOSTICS') == 'true':
+        class DiagnosticAdapter(HTTPAdapter):
+            def send(self, request, **kwargs):
+                response = super().send(request, **kwargs)
+                if request.url == EWS_ENDPOINT:
+                    print('Exchange transport: ' + transport_event(request, response))
+                return response
+        BaseProtocol.HTTP_ADAPTER_CLS = DiagnosticAdapter
     auth = {'NTLM': NTLM, 'BASIC': BASIC}[os.environ.get('EWS_AUTH_TYPE', 'NTLM')]
     config = Configuration(service_endpoint=EWS_ENDPOINT, credentials=Credentials(email, password),
                            auth_type=auth, retry_policy=FailFast())

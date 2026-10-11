@@ -1,8 +1,9 @@
 import unittest
+import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
-from poller.mail import unread, message_key, PartialScan, classify
+from poller.mail import unread, message_key, PartialScan, classify, transport_event
 from poller.run import scan, APIError, NoRedirect, error_kinds
 
 
@@ -86,6 +87,14 @@ class Tests(unittest.TestCase):
                 raise TimeoutError('private server response') from cause
         except Exception as error:
             self.assertEqual(error_kinds(error), 'TimeoutError -> ConnectionError')
+
+    def test_transport_diagnostic_excludes_private_request_and_response(self):
+        token = base64.b64encode(b'NTLMSSP\x00' + (3).to_bytes(4, 'little') + b'PRIVATE IDENTITY').decode()
+        request = SimpleNamespace(headers={'Authorization': 'NTLM ' + token}, body='PRIVATE PASSWORD')
+        response = SimpleNamespace(status_code=401, text='PRIVATE RESPONSE')
+        self.assertEqual(transport_event(request, response), 'ntlm-authenticate:HTTP401')
+        request.headers={'Authorization':'Basic PRIVATE CREDENTIALS'}
+        self.assertEqual(transport_event(request, response), 'other-authentication:HTTP401')
 
 
 if __name__ == '__main__':

@@ -23,4 +23,5 @@ jobs:
           BOT_BACKEND_URL: ${{ secrets.BOT_BACKEND_URL }}
           BOT_RUNNER_TOKEN: ${{ secrets.BOT_RUNNER_TOKEN }}
           EWS_AUTH_TYPE: ${{ vars.EWS_AUTH_TYPE || 'NTLM' }}
+          EWS_DIAGNOSTICS: 'true'
         run: python -m poller.run --initial
