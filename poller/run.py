@@ -23,6 +23,17 @@ class APIError(Exception):
     pass
 
 
+def error_kinds(error):
+    """Bounded class names only: exception messages and response contents are private."""
+    kinds, seen = [], set()
+    while error is not None and id(error) not in seen and len(kinds) < 5:
+        seen.add(id(error))
+        kind = type(error).__name__
+        kinds.append(kind if kind.isidentifier() and len(kind) <= 64 else 'Error')
+        error = error.__cause__ or error.__context__
+    return ' -> '.join(kinds)
+
+
 class Backend:
     def __init__(self):
         self.base = os.environ['BOT_BACKEND_URL'].rstrip('/')
@@ -63,9 +74,7 @@ def scan(api, job, slot, budget_ok, connector=connect, reader=unread):
     except Exception as error:
         result = classify(error)
         # Class names and categories identify transport problems without exposing URLs or credentials.
-        kind = type(error).__name__
-        if kind.isidentifier() and len(kind) <= 64:
-            print(f'Exchange check failed. Category: {result}; type: {kind}. Sensitive details omitted.')
+        print(f'Exchange check failed. Category: {result}; types: {error_kinds(error)}. Sensitive details omitted.')
     finally:
         claimed.clear()
     # The lease prevents stale runs finishing after a credential change/revocation.

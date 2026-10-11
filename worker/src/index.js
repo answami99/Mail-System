@@ -1,6 +1,7 @@
-import {first, json, now, run, sameSecret, seal, unseal, Telegram, TelegramError} from './common.js';
+import {all, first, json, now, run, sameSecret, seal, unseal, Telegram, TelegramError} from './common.js';
 import {handleUpdate} from './bot.js';
 import {jobs} from './jobs.js';
+import {queueInitial} from './initial.js';
 
 export async function handle(request, env, tg = new Telegram(env)) {
   const path = new URL(request.url).pathname;
@@ -53,7 +54,18 @@ export async function handle(request, env, tg = new Telegram(env)) {
       setupStage = 'telegram-webhook-verify';
       const info = await tg.call('getWebhookInfo',{});
       if (info.url !== url || info.max_connections !== 1) return json({error:'Webhook verification failed'},503);
-      return json({ok:true,bot:'RajasthanMail_bot',webhook_configured:true});
+      // Backfill accounts connected before the first-check feature was deployed.
+      // Completed checks are never re-enqueued by this idempotent setup operation.
+      setupStage = 'initial-check';
+      const waiting = await all(env, `SELECT m.user_id,m.key_id,c.revision FROM members m
+        JOIN access_keys k ON k.id=m.key_id JOIN credentials c ON c.key_id=m.key_id
+        WHERE m.active=1 AND m.blocked=0 AND k.active=1 AND c.paused=0 AND c.last_checked IS NULL
+        AND NOT EXISTS(SELECT 1 FROM initial_checks i WHERE i.key_id=m.key_id AND i.user_id=m.user_id
+          AND i.revision=c.revision AND i.state='done') LIMIT 50`);
+      let requested = 0;
+      for (const account of waiting) requested += Number(await queueInitial(env,account.key_id,account.user_id,account.revision));
+      return json({ok:true,bot:'RajasthanMail_bot',webhook_configured:true,
+        initial_checks_queued:waiting.length,initial_checks_requested:requested});
     }
     if (path !== '/telegram') return await jobs(env, path, body, tg);
     if (!Number.isSafeInteger(body.update_id)) return json({error:'Invalid update'}, 400);

@@ -8,11 +8,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   connect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Register and verify private webhook
@@ -20,3 +20,5 @@ jobs:
           BOT_BACKEND_URL: ${{ secrets.BOT_BACKEND_URL }}
           BOT_RUNNER_TOKEN: ${{ secrets.BOT_RUNNER_TOKEN }}
         run: python scripts/connect_backend.py
+      - name: Check Exchange endpoint reachability without login
+        run: python scripts/check_exchange_endpoint.py

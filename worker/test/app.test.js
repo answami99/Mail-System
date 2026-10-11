@@ -257,7 +257,7 @@ test('expired password entry cannot overwrite credentials', async () => {
   assert.equal(await unseal(s.env,`password:${a.id}`,c.password_cipher),'private-password');
 });
 
-test('setup requires runner authentication and cannot redirect updates or replace another bot webhook', async () => {
+test('setup requires runner authentication and cannot redirect updates or replace another bot webhook', async t => {
   const s=setup();
   s.env.TELEGRAM_BOT_TOKEN='12345:'+ 'a'.repeat(35); s.env.KEY_PEPPER='p'.repeat(32); s.env.WEBHOOK_SECRET='w'.repeat(32);
   const calls=[]; let destination=''; let username='RajasthanMail_bot';
@@ -281,5 +281,16 @@ test('setup requires runner authentication and cannot redirect updates or replac
   assert.equal(update.url,'https://private-email-bot.answami99.workers.dev/telegram');
   assert.equal(update.secret_token,s.env.WEBHOOK_SECRET);
   assert.equal(update.drop_pending_updates,false);
-  assert.equal((await s.api('/internal/setup',{})).status,200);
+  const key=await s.enroll(2,'Alice');
+  s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  const dispatch=t.mock.method(globalThis,'fetch',async ()=>new Response(null,{status:204}));
+  const connected=await s.api('/internal/setup',{});
+  assert.equal(connected.status,200);
+  assert.equal(connected.body.initial_checks_queued,1);
+  assert.equal(connected.body.initial_checks_requested,1);
+  assert.equal(dispatch.mock.callCount(),1);
+  await s.api('/internal/setup',{});
+  assert.equal(dispatch.mock.callCount(),1);
+  await run(s.env,'UPDATE initial_checks SET state=\'done\' WHERE key_id=?',key.id);
+  assert.equal((await s.api('/internal/setup',{})).body.initial_checks_queued,0);
 });

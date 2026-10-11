@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from poller.mail import unread, message_key, PartialScan, classify
-from poller.run import scan, APIError, NoRedirect
+from poller.run import scan, APIError, NoRedirect, error_kinds
 
 
 class Query:
@@ -77,6 +77,15 @@ class Tests(unittest.TestCase):
 
     def test_backend_redirect_never_forwards_runner_secret(self):
         self.assertIsNone(NoRedirect().redirect_request(None, None, None, None, None, None))
+
+    def test_exception_chain_never_serializes_private_messages(self):
+        try:
+            try:
+                raise ConnectionError('private email and password')
+            except Exception as cause:
+                raise TimeoutError('private server response') from cause
+        except Exception as error:
+            self.assertEqual(error_kinds(error), 'TimeoutError -> ConnectionError')
 
 
 if __name__ == '__main__':

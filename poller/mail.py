@@ -11,7 +11,7 @@ def message_key(key_id, revision, source_id):
 
 
 def connect(email, password):
-    from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM, BASIC, FaultTolerance
+    from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM, BASIC, FailFast
     from exchangelib.protocol import BaseProtocol
     # Do not disable TLS verification, autodiscover to another host, or impersonate another mailbox.
     if not email.lower().endswith('@rajasthan.gov.in'):
@@ -19,7 +19,9 @@ def connect(email, password):
     BaseProtocol.TIMEOUT = 30
     auth = {'NTLM': NTLM, 'BASIC': BASIC}[os.environ.get('EWS_AUTH_TYPE', 'NTLM')]
     config = Configuration(service_endpoint=EWS_ENDPOINT, credentials=Credentials(email, password),
-                           auth_type=auth, retry_policy=FaultTolerance(max_wait=30))
+                           auth_type=auth, retry_policy=FailFast())
+    # Scheduled jobs provide retries. FailFast preserves authentication failures instead of
+    # treating HTTP 401 as throttling and hiding it behind a RateLimitError.
     return Account(primary_smtp_address=email, config=config, autodiscover=False, access_type=DELEGATE)
 
 
