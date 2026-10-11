@@ -75,6 +75,10 @@ Ensure Actions are enabled and the workflow is on the default branch. Both workf
 
 ## 5. Enroll and test the host mailbox
 
+For automatic first checks, apply `worker/migrations/0002_initial_checks.sql` before deploying the new Worker. Create a fine-grained GitHub token limited to **answami99/Mail-System**, with **Actions: Read and write** (and the mandatory Metadata read permission). Add it only to Cloudflare as encrypted secret `GITHUB_DISPATCH_TOKEN`. It lets the backend request the fixed `First connection check` workflow on `main`; no mailbox/account identifiers are sent in the dispatch request. No Contents write permission is needed. Rotate the token before its chosen expiry. Until this secret is configured, first checks wait for a scheduled run.
+
+Each newly enrolled Telegram account gets an initial unread-mail check once mailbox credentials exist, even outside the regular work window. Multiple devices using one Telegram account are one recipient. Initial checks deliver only to the joining account; regular checks serve all enrolled recipients. The durable queue is also covered by regular checks if a dispatch fails or GitHub replaces a pending run. Manually running **First connection check** drains this initial queue without checking unrelated accounts.
+
 In a private bot chat:
 
 ```text

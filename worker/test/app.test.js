@@ -5,10 +5,11 @@ import {readFileSync} from 'node:fs';
 import {handle} from '../src/index.js';
 import {formatEmail, first, run, unseal, seal, now} from '../src/common.js';
 import {slotAt} from '../src/jobs.js';
+import {queueInitial} from '../src/initial.js';
 
 // Real SQLite constraints/transactions behind the small D1 async interface.
 class D1 {
-  constructor() { this.db = new DatabaseSync(':memory:'); this.db.exec(readFileSync(new URL('../migrations/0001.sql', import.meta.url), 'utf8')); }
+  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
   prepare(sql) {
     const query = this.db.prepare(sql);
     const make = args => ({
@@ -56,6 +57,64 @@ function setup() {
   return {env,tg,sent,deleted,api,chat,enroll,claim};
 }
 const email = {source_id:'ews-id-1',sender:'sender@example.org',subject:'Meeting at noon',received:'12 Oct 2026, 10:00 AM IST'};
+
+test('first checks run outside schedule and deliver only to the newly joined account', async () => {
+  const s=setup(), key=await s.enroll(2,'Alice');
+  const regular=await s.claim(key);
+  await s.api('/internal/ingest',{...regular,email});
+  await s.api('/internal/finish',{...regular,slot:'manual:test',result:'success'});
+  await s.api('/internal/deliver',{id:(await s.api('/internal/pending',{})).body.ids[0]});
+  await s.chat(4,`/start ${key.code}`);
+  const queued=await first(s.env,'SELECT * FROM initial_checks WHERE user_id=4');
+  const batch=(await s.api('/internal/jobs',{initial:true})).body;
+  const job=batch.jobs.find(j=>j.initial_request===queued.id);
+  assert(job);
+  const c=(await s.api('/internal/claim',{...job,slot:batch.slot})).body;
+  assert.equal((await s.api('/internal/known',c)).body.ids.length,0);
+  await s.api('/internal/ingest',{...c,email});
+  await s.api('/internal/ingest',{...c,email:{...email,source_id:'new-during-onboarding'}});
+  assert.equal((await first(s.env,`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id=d.message_id
+    WHERE m.id<>? AND d.user_id=2`,(await s.api('/internal/known',c)).body.ids[0])).n,0);
+  const pending=(await s.api('/internal/pending',{initial_request:queued.id})).body.ids;
+  assert.equal(pending.length,2);
+  for (const id of pending) await s.api('/internal/deliver',{id});
+  assert.equal(s.sent.filter(x=>x.id===4 && x.text.startsWith('From:')).length,2);
+  assert.equal(s.sent.filter(x=>x.id===2 && x.text.startsWith('From:')).length,1);
+  await s.api('/internal/finish',{...c,slot:batch.slot,result:'success'});
+  assert.equal((await first(s.env,'SELECT state FROM initial_checks WHERE id=?',queued.id)).state,'done');
+  assert.equal((await first(s.env,'SELECT last_slot FROM credentials WHERE key_id=?',key.id)).last_slot,'manual:test');
+  await s.chat(4,`/start ${key.code}`);
+  assert.equal((await first(s.env,'SELECT COUNT(*) AS n FROM initial_checks WHERE user_id=4')).n,1);
+  assert.equal((await s.api('/internal/jobs',{initial:true})).body.jobs.length,0);
+});
+
+test('initial queue waits for credentials and excludes blocked accounts', async () => {
+  const s=setup();
+  await s.chat(1,'/start 12345678');
+  assert.equal((await s.api('/internal/jobs',{initial:true})).body.jobs.length,0);
+  await s.chat(1,'host@rajasthan.gov.in');
+  await s.chat(1,'private-password');
+  assert.equal((await s.api('/internal/jobs',{initial:true})).body.jobs.length,1);
+  const k=await s.enroll(2,'Alice');
+  await s.chat(1,'/remove 2');
+  assert.equal((await s.api('/internal/jobs',{initial:true})).body.jobs.some(j=>j.key_id===k.id),false);
+});
+
+test('initial trigger dispatches fixed workflow without identifiers; missing token retains queue', async t => {
+  const s=setup(), key=await s.enroll(2,'Alice');
+  assert.equal(await queueInitial(s.env,key.id,2,1),false);
+  s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  const mock=t.mock.method(globalThis,'fetch',async (url,options)=>{
+    assert.equal(url,'https://api.github.com/repos/answami99/Mail-System/actions/workflows/initial.yml/dispatches');
+    assert.equal(options.redirect,'manual');
+    assert.deepEqual(JSON.parse(options.body),{ref:'main'});
+    return Response.json({workflow_run_id:123},{status:200});
+  });
+  assert.equal(await queueInitial(s.env,key.id,2,1),true);
+  assert.equal(await queueInitial(s.env,key.id,2,1),true);
+  assert.equal(mock.mock.callCount(),1);
+  assert.equal((await first(s.env,'SELECT COUNT(*) AS n FROM initial_checks WHERE user_id=2')).n,1);
+});
 
 test('exact IST weekday slots, including endpoints, late grace and weekend exclusion', () => {
   assert.equal(slotAt(new Date('2026-10-12T03:59:00Z')),null);

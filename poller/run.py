@@ -62,6 +62,10 @@ def scan(api, job, slot, budget_ok, connector=connect, reader=unread):
         raise
     except Exception as error:
         result = classify(error)
+        # Class names and categories identify transport problems without exposing URLs or credentials.
+        kind = type(error).__name__
+        if kind.isidentifier() and len(kind) <= 64:
+            print(f'Exchange check failed. Category: {result}; type: {kind}. Sensitive details omitted.')
     finally:
         claimed.clear()
     # The lease prevents stale runs finishing after a credential change/revocation.
@@ -69,10 +73,10 @@ def scan(api, job, slot, budget_ok, connector=connect, reader=unread):
     return result, found
 
 
-def drain(api, budget_ok):
+def drain(api, budget_ok, initial_request=None):
     delivered = 0
     while budget_ok():
-        pending = api.post('pending', {})['ids']
+        pending = api.post('pending', {'initial_request': initial_request} if initial_request else {})['ids']
         if not pending:
             break
         for item in pending:
@@ -88,6 +92,7 @@ def drain(api, budget_ok):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='Explicit manual run outside scheduled hours')
+    parser.add_argument('--initial', action='store_true', help='Check only queued newly connected Telegram accounts')
     parser.add_argument('--probe', action='store_true', help='Read-only local EWS login test; no Telegram transmission')
     args = parser.parse_args()
     if args.probe:
@@ -107,12 +112,15 @@ def main():
     failures, found = 0, 0
     try:
         api = Backend()
-        batch = api.post('jobs', {'force': args.force})
+        batch = api.post('jobs', {'force': args.force, 'initial': args.initial})
         if not batch['slot']:
             print('Outside the scheduled work window; no mail checks or sends performed.')
             return 0
         jobs = batch['jobs']
+        sent, failed_keys = 0, set()
         for index, job in enumerate(jobs):
+            if args.initial and job['key_id'] in failed_keys:
+                continue
             if not budget_ok():
                 failures += 1
                 break
@@ -124,9 +132,14 @@ def main():
                 result, count = scan(api, job, batch['slot'], mailbox_budget)
                 found += count
                 failures += int(result != 'success')
+                if args.initial:
+                    sent += drain(api, budget_ok, job['initial_request'])
+                    if result != 'success':
+                        failed_keys.add(job['key_id'])
             except Exception:
                 failures += 1
-        sent = drain(api, budget_ok)
+        if not args.initial:
+            sent = drain(api, budget_ok)
         print(f'Run complete. Mailboxes attempted: {len(jobs)}; newly queued: {found}; delivered: {sent}; failed checks: {failures}.')
         return 1 if failures else 0
     except Exception:

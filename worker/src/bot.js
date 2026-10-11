@@ -1,4 +1,5 @@
 import {all, canEdit, digest, first, isHost, member, now, randomCode, rate, run, seal, stmt, unseal, sameSecret} from './common.js';
+import {queueInitial} from './initial.js';
 
 const help = '/status — last check and delivery backlog\n/email — connect or change mailbox\n/password — change password\n/cancel — cancel entry';
 const adminHelp = '\n/new Name — create a fixed key\n/keys — keys and account counts\n/members KEY_ID — accounts\n/remove TELEGRAM_ID — block an account\n/allow TELEGRAM_ID — allow it to join again\n/revoke KEY_ID — revoke key and erase mailbox data\n/owner KEY_ID TELEGRAM_ID — change mailbox manager\n/resume KEY_ID — retry a paused mailbox\n/health — all mailbox status';
@@ -50,9 +51,14 @@ async function redeem(env, user, label, code, tg) {
   const joined = await member(env, user);
   if (!joined || joined.key_id !== key.id) return tg.send(user, 'This key has reached its account limit. Contact the host.');
   await tg.send(user, `Connected to ${key.name}. Same Telegram account on multiple devices needs no extra key.\n${help}`);
-  const creds = await first(env, 'SELECT key_id FROM credentials WHERE key_id=?', key.id);
+  const creds = await first(env, 'SELECT key_id,revision FROM credentials WHERE key_id=?', key.id);
   if (!creds && canEdit(env, joined)) await beginEmail(env, user, tg);
   else if (!creds) await tg.send(user, 'The mailbox manager must connect the email account first.');
+  else if (!existing) {
+    const dispatched = await queueInitial(env, key.id, user, creds.revision);
+    await tg.send(user, dispatched ? 'Your first unread-mail check has been requested. Results will appear when it completes.' :
+      'Your first unread-mail check is queued for the next scheduled check.');
+  }
 }
 
 async function admin(env, user, command, argument, tg, updateId) {
@@ -185,7 +191,12 @@ export async function handleUpdate(env, update, tg) {
         stmt(env, 'DELETE FROM states WHERE user_id=?', user)];
       if (old && !sameMailbox) changes.push(stmt(env, 'DELETE FROM messages WHERE key_id=?', m.key_id));
       await env.DB.batch(changes);
-      return tg.send(user, 'Credentials saved encrypted. Login is not yet verified; the next check will test Exchange API access. Existing unread emails will be included, and delivered emails will not normally repeat.');
+      const recipients = !old || !sameMailbox ? await all(env, 'SELECT user_id FROM members WHERE key_id=? AND active=1 AND blocked=0',m.key_id) : [{user_id:user}];
+      let dispatched = false;
+      for (const recipient of recipients) dispatched = await queueInitial(env,m.key_id,recipient.user_id,revision) || dispatched;
+      return tg.send(user, 'Credentials saved encrypted. Login is not yet verified. ' +
+        (dispatched ? 'Your first check has been requested.' : 'Your first check is queued for the next scheduled run.') +
+        ' Existing unread emails will be included, and delivered emails will not normally repeat.');
     }
   }
   return tg.send(user, 'Use /help for available commands.');
