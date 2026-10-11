@@ -1,6 +1,6 @@
 import {all, canEdit, first, isHost, member, now} from './common.js';
 
-export const scheduleText = 'Every 10 minutes · Mon–Fri, 09:30–18:00 IST';
+export const scheduleText = 'Every 10 minutes · Daily, 09:30–18:00 IST';
 export const menuCommands = {
   '📬 My mailbox':'/status', '🕒 Last check':'/lastcheck', '🕒 Last checks':'/lastcheck',
   '👥 Manage access':'/keys', '➕ Create code':'/new',
@@ -56,7 +56,7 @@ export function checkOutcome(c) {
 }
 export function overdue(c,date=new Date()) {
   const local=new Date(date.getTime()+330*60000),minute=local.getUTCHours()*60+local.getUTCMinutes();
-  return local.getUTCDay()>0 && local.getUTCDay()<6 && minute>=590 && minute<=1080 &&
+  return minute>=590 && minute<=1080 &&
     !!c?.status && (!c.last_attempt || c.last_attempt<Math.floor(date.getTime()/1000)-1200);
 }
 const checkFields='c.status,c.paused,c.last_checked,c.last_attempt,c.last_finished,c.last_result,c.lease_until';

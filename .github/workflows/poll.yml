@@ -1,9 +1,9 @@
 name: Check email inboxes
 on:
   schedule:
-    # Mon–Fri, 09:30–18:00 IST inclusive (UTC schedules).
-    - cron: '*/10 4-11 * * 1-5'
-    - cron: '0,10,20,30 12 * * 1-5'
+    # Every day, 09:30–18:00 IST inclusive (UTC schedules).
+    - cron: '*/10 4-11 * * *'
+    - cron: '0,10,20,30 12 * * *'
   workflow_dispatch:
     inputs:
       force:

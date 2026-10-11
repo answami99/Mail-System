@@ -90,7 +90,7 @@ In a private bot chat:
 
 The password step explicitly explains Telegram cloud-chat exposure and attempts to delete your password message. Credentials are saved encrypted, not yet asserted valid. The backend host controls their encryption key.
 
-In GitHub Actions, choose **Check email inboxes → Run workflow**. Select `force` only when you intend to run outside the weekday work window (for example, Saturday setup). A forced run checks and delivers immediately; otherwise the runner skips outside that window.
+In GitHub Actions, choose **Check email inboxes → Run workflow**. Select `force` only when you intend to run outside the daily 09:30–18:00 IST window. A forced run checks and delivers immediately; otherwise the runner skips outside that window.
 
 Acceptance checks before inviting other people:
 
@@ -140,9 +140,9 @@ When the Telegram token and other secrets are already stored in Cloudflare, depl
 
 ## Ten-minute schedule and button menu upgrade
 
-Apply `worker/migrations/0004_check_status.sql` before deploying the updated Worker. It adds latest-attempt, completion and result fields, conservatively backfills known successful scans, and changes the configured hours from 24/7 to weekday office hours.
+Apply `worker/migrations/0004_check_status.sql` before deploying the updated Worker. It adds latest-attempt, completion and result fields, conservatively backfills known successful scans, and changes the configured hours from 24/7 to office hours (the latest daily schedule also includes weekends).
 
-Deploy `ui.js` along with the other Worker modules and update `poll.yml`. The UTC cron expressions are `*/10 4-11 * * 1-5` and `0,10,20,30 12 * * 1-5`, covering 09:30–18:00 IST inclusive. Backend slot suppression must also use ten-minute intervals.
+Deploy `ui.js` along with the other Worker modules and update `poll.yml`. The UTC cron expressions are `*/10 4-11 * * *` and `0,10,20,30 12 * * *`, covering 09:30–18:00 IST inclusive every day. Backend slot suppression must also use ten-minute intervals.
 
 Run **Connect Telegram bot** to set and read back default/user and host command menus. It also sends the enrolled host a button dashboard when no credential entry is pending. Existing users can send `/start` or `/menu` once to reveal their buttons.
 

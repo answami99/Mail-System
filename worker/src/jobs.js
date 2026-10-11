@@ -4,9 +4,9 @@ import {pushControl, pushWindow, dispatchPush} from './push.js';
 
 export function slotAt(date = new Date(), always = false) {
   const local = new Date(date.getTime() + 330 * 60000);
-  const day = local.getUTCDay(), minute = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const minute = local.getUTCHours() * 60 + local.getUTCMinutes();
   // Allow a delayed final run to service the 18:00 slot until 18:09 IST.
-  if (!always && (day === 0 || day === 6 || minute < 570 || minute >= 1090)) return null;
+  if (!always && (minute < 570 || minute >= 1090)) return null;
   const slot = Math.floor(minute / 10) * 10;
   return `${local.toISOString().slice(0, 10)}T${String(Math.floor(slot / 60)).padStart(2, '0')}:${String(slot % 60).padStart(2, '0')}+05:30`;
 }

@@ -120,7 +120,7 @@ test('initial trigger dispatches fixed workflow without identifiers; missing tok
   assert.equal((await first(s.env,'SELECT COUNT(*) AS n FROM initial_checks WHERE user_id=2')).n,1);
 });
 
-test('exact IST weekday slots, including endpoints, late grace and weekend exclusion', () => {
+test('daily IST slots include weekends, endpoints and late grace, and exclude out-of-hours checks', () => {
   assert.equal(slotAt(new Date('2026-10-12T03:59:00Z')),null);
   assert.equal(slotAt(new Date('2026-10-12T04:00:00Z')),'2026-10-12T09:30+05:30');
   assert.equal(slotAt(new Date('2026-10-16T12:30:00Z')),'2026-10-16T18:00+05:30');
@@ -129,8 +129,8 @@ test('exact IST weekday slots, including endpoints, late grace and weekend exclu
   assert.equal(slotAt(new Date('2026-10-12T04:20:00Z')),'2026-10-12T09:50+05:30');
   assert.equal(slotAt(new Date('2026-10-16T12:39:59Z')),'2026-10-16T18:00+05:30');
   assert.equal(slotAt(new Date('2026-10-16T12:40:00Z')),null);
-  assert.equal(slotAt(new Date('2026-10-17T06:00:00Z')),null);
-  assert.equal(slotAt(new Date('2026-10-18T06:00:00Z')),null);
+  assert.equal(slotAt(new Date('2026-10-17T06:00:00Z')),'2026-10-17T11:30+05:30');
+  assert.equal(slotAt(new Date('2026-10-18T06:00:00Z')),'2026-10-18T11:30+05:30');
 });
 test('forged webhooks, unauthenticated runner calls, group messages and stolen host code fail closed', async () => {
   const s=setup();
@@ -484,7 +484,7 @@ test('check displays distinguish expired runs, incomplete scans and overdue offi
   assert.equal(overdue(old,new Date('2026-10-12T04:19:00Z')),false);
   assert.equal(overdue(old,new Date('2026-10-12T04:20:00Z')),true);
   assert.equal(overdue(old,new Date('2026-10-12T13:00:00Z')),false);
-  assert.equal(overdue(old,new Date('2026-10-18T06:00:00Z')),false);
+  assert.equal(overdue(old,new Date('2026-10-18T06:00:00Z')),true);
 });
 
 test('button menus guide host and users, protect credential prompts and preserve mailbox isolation',async()=>{

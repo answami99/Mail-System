@@ -62,7 +62,7 @@ export function pushResponse(status='OK') {
 export async function pushWindow(env, date=new Date()) {
   if((await first(env,"SELECT value FROM settings WHERE id='realtime_hours'"))?.value==='always') return true;
   const local=new Date(date.getTime()+330*60000), minute=local.getUTCHours()*60+local.getUTCMinutes();
-  return ![0,6].includes(local.getUTCDay()) && minute>=570 && minute<=1080;
+  return minute>=570 && minute<=1080;
 }
 export async function dispatchPush(env) {
   if(!env.GITHUB_DISPATCH_TOKEN || !await pushWindow(env)) return false;
