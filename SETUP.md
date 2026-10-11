@@ -129,7 +129,7 @@ Default capacity is ten active keys including Host, with up to five Telegram acc
 - At most one GitHub poll workflow runs at a time. A killed worker lease expires after 15 minutes. Telegram delivery leases expire after two minutes.
 - Keep the D1 database and `ENCRYPTION_KEY`/`KEY_PEPPER` securely backed up. Do not export credentials into the repository. Deletion does not necessarily erase provider backups instantly.
 - Changing a password preserves delivery history; changing the mailbox address increments its version and removes old queued notifications so they cannot be sent as the new mailbox's mail.
-- To stop all processing, disable the GitHub poll workflow and remove the Telegram webhook through your own bot administration. Key revocation is available for individual mailbox shutdown.
+- To stop all processing, remove the Cloudflare Cron Triggers, disable the GitHub poll workflow, and remove the Telegram webhook through your own bot administration. Key revocation is available for individual mailbox shutdown.
 - A Telegram timeout can leave an uncertain send outcome. Retrying may duplicate that notification; this is not an exactly-once system.
 - If GitHub schedules become too unreliable or the free allocation is insufficient, the same poller can run from an always-on trusted machine. Its backend/API boundary is independent of GitHub.
 
@@ -151,3 +151,13 @@ For the pause/leave upgrade, apply `worker/migrations/0005_user_notifications.sq
 Migration 0005 also creates per-code restrictions, an independent blacklist and retired code hashes. Existing removed accounts become restricted to their previous code. The host menu includes **Blocked accounts**, and each named organisation has **Delete permanently** and **Blacklist** actions for users, plus **Delete organisation permanently**. Deleted users can be allowed on that code again without restoring their erased data; different codes remain usable unless the account is blacklisted. Test permanent deletion with synthetic accounts/data only, not a real connected mailbox.
 
 Acceptance: verify the host Last checks button shows the actual latest attempt and previous success separately, user Last check stays scoped to its own mailbox, Cancel exits entry safely, and success/failure/expired-run results remain distinct. A manual forced poll validates the new history fields even outside office hours. Real scheduled timing remains subject to GitHub delays.
+
+## Cloudflare primary scheduler
+
+Apply `worker/migrations/0006_scheduler.sql` before deploying the Worker with `scheduler.js` and its `scheduled()` handler. Keep the existing encrypted `GITHUB_DISPATCH_TOKEN`, scoped only to this repository with Actions read/write. Do not enter or reveal its value again.
+
+Configure both UTC Cron Triggers on `private-email-bot`: `*/10 4-11 * * *` and `0,10,20,30 12 * * *`. They cover all seven days, 09:30–18:00 IST inclusive. They are also declared in `worker/wrangler.toml` so a later Wrangler deployment preserves the configuration. The current dashboard-managed deployment must add them under Settings → Trigger Events after deploying the scheduled handler. Leave the GitHub cron expressions as a fallback; both routes share completed-slot suppression and mailbox leases.
+
+The scheduler sends only `{ref:"main",inputs:{force:false}}` to the fixed `poll.yml` dispatch endpoint. It does not bypass office hours, authentication, user pause/revocation, or mailbox failures. Duplicate events are claimed atomically per slot; transient dispatch failures get one immediate retry. Stale events from previous slots are ignored. Seven days of aggregate trigger status are kept in `scheduler_ticks` without mailbox or recipient identifiers.
+
+Cloudflare configuration can take up to fifteen minutes to propagate. Observe an actual Cloudflare cron event, a matching `workflow_dispatch` run with no manual dispatch, and successful mailbox completion. Compare trigger time with runner start/finish; do not treat an accepted API response as a finished mail check. The host Last checks display exposes both results. No exact-time delivery guarantee or provider delay percentage is claimed.

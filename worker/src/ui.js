@@ -45,7 +45,7 @@ export async function showHelp(env,user,tg) {
   if(!m) return tg.send(user,'This is a private notification bot. Ask your host for an access code, then tap Enter access code. Your name is requested to identify your account and help prevent misuse.');
   return tg.send(user,`How to use Rajasthan Mail\n\n${isHost(env,user)?
     '➕ Create code — enter a person or organisation name.\n👥 Manage access — view accounts, change the manager, allow/remove access, permanently delete users or organisations, or blacklist an account.\n⛔ Blocked accounts — see the blacklist and unblock accounts.\n🕒 Last checks — see whether each mailbox check succeeded.\n':
-    '📬 My mailbox — see your connection and notification status.\n🕒 Last check — see the latest check result.\n'}${canEdit(env,m)?'✉️ Change email / 🔐 Change password — follow the private prompts.\n':''}⏸ Pause / ▶️ Resume notifications — stop delivery to your Telegram account temporarily. Queued notifications wait until you resume; shared mailbox checks continue.\n${isHost(env,user)?'':'🚪 Leave bot — disconnect your account after confirmation. You can rejoin later with an active access code.\n'}\n${scheduleText}\nEach notification contains sender, subject and received time. Emails stay unread. Already read or moved emails are excluded.\n\nGitHub may delay checks. New accounts get a first check after connection. Use Cancel while entering details to stop. Commands remain available with /commands.`);
+    '📬 My mailbox — see your connection and notification status.\n🕒 Last check — see the latest check result.\n'}${canEdit(env,m)?'✉️ Change email / 🔐 Change password — follow the private prompts.\n':''}⏸ Pause / ▶️ Resume notifications — stop delivery to your Telegram account temporarily. Queued notifications wait until you resume; shared mailbox checks continue.\n${isHost(env,user)?'':'🚪 Leave bot — disconnect your account after confirmation. You can rejoin later with an active access code.\n'}\n${scheduleText}\nEach notification contains sender, subject and received time. Emails stay unread. Already read or moved emails are excluded.\n\nCloudflare requests checks; GitHub runner delays are still possible. New accounts get a first check after connection. Use Cancel while entering details to stop. Commands remain available with /commands.`);
 }
 export function checkOutcome(c) {
   if(!c?.status) return '⚪ Mailbox not connected';
@@ -81,7 +81,11 @@ export async function showLastChecks(env,user,tg) {
   const buttons={inline_keyboard:[...rows.map(r=>[{text:`${r.name} — details`.slice(0,64),callback_data:`check:${r.id}`}]),
     [{text:'Refresh results',callback_data:'menu:lastcheck'},{text:'Main menu',callback_data:'menu:home'}],
     [{text:'Open workflow runs',url:'https://github.com/answami99/Mail-System/actions/workflows/poll.yml'}]]};
-  let text=`Last mailbox checks\n${scheduleText}\n\n`;
+  const tick=await first(env,'SELECT status,attempted_at,finished_at,http_status FROM scheduler_ticks ORDER BY attempted_at DESC LIMIT 1');
+  const trigger=!tick?'Awaiting first automatic trigger':tick.status==='accepted'?'GitHub accepted the check request':
+    tick.status==='dispatching' && tick.attempted_at>now()-90?'Request in progress':tick.status==='dispatching'?'Request interrupted':
+    `Request failed${tick.http_status?' (HTTP '+tick.http_status+')':''}`;
+  let text=`Last mailbox checks\n${scheduleText}\n\nCloudflare trigger: ${trigger}\nTrigger time: ${istTime(tick?.attempted_at)}\nA request being accepted does not mean the inbox check has finished.\n\n`;
   for(const r of rows) {
     const line=`${r.name}\n${checkOutcome(r)}\nLast attempt: ${istTime(r.last_attempt)}\nLast success: ${istTime(r.last_checked)}${overdue(r)?'\n⚠️ Overdue: no recent check reported.':''}\n\n`;
     if(text.length+line.length>3500) {await tg.send(user,text);text='';} text+=line;

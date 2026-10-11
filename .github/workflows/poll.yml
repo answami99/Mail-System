@@ -1,7 +1,7 @@
 name: Check email inboxes
 on:
   schedule:
-    # Every day, 09:30–18:00 IST inclusive (UTC schedules).
+    # Fallback to the primary Cloudflare Cron Trigger. Daily 09:30–18:00 IST.
     - cron: '*/10 4-11 * * *'
     - cron: '0,10,20,30 12 * * *'
   workflow_dispatch:

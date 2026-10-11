@@ -3,16 +3,20 @@ main = "src/index.js"
 compatibility_date = "2026-10-01"
 workers_dev = true
 
+# Primary trigger, daily 09:30–18:00 IST inclusive. GitHub cron is a fallback.
+[triggers]
+crons = ["*/10 4-11 * * *", "0,10,20,30 12 * * *"]
+
 # Never put secret values in this file. See SETUP.md.
 [vars]
-HOST_TELEGRAM_ID = "REPLACE_WITH_YOUR_NUMERIC_TELEGRAM_ID"
+HOST_TELEGRAM_ID = "712117134"
 MAX_MEMBERS_PER_KEY = "5"
 MAX_KEYS = "10"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "private-email-bot"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "8208209f-9d71-4d16-8749-627ee00e85fb"
 migrations_dir = "migrations"
 
 [observability]

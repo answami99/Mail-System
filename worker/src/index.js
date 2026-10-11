@@ -4,6 +4,7 @@ import {jobs} from './jobs.js';
 import {queueInitial} from './initial.js';
 import {receivePush} from './push.js';
 import {showMenu, withMenus} from './ui.js';
+import {scheduleChecks} from './scheduler.js';
 
 export async function handle(request, env, tg = new Telegram(env)) {
   const path = new URL(request.url).pathname;
@@ -107,4 +108,7 @@ export async function handle(request, env, tg = new Telegram(env)) {
     return json({error:'Temporary service failure'}, 503);
   }
 }
-export default {fetch(request, env) { return handle(request, env); }};
+export default {
+  fetch(request, env) { return handle(request, env); },
+  async scheduled(controller, env) { await scheduleChecks(controller,env); }
+};

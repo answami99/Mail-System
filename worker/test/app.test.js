@@ -7,10 +7,11 @@ import {formatEmail, first, run, unseal, seal, now} from '../src/common.js';
 import {slotAt} from '../src/jobs.js';
 import {checkOutcome,overdue} from '../src/ui.js';
 import {queueInitial} from '../src/initial.js';
+import {scheduleChecks} from '../src/scheduler.js';
 
 // Real SQLite constraints/transactions behind the small D1 async interface.
 class D1 {
-  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql','0004_check_status.sql','0005_user_notifications.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
+  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql','0004_check_status.sql','0005_user_notifications.sql','0006_scheduler.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
   prepare(sql) {
     const query = this.db.prepare(sql);
     const make = args => ({
@@ -61,6 +62,97 @@ function setup() {
   return {env,tg,sent,deleted,api,chat,rawChat,enroll,claim};
 }
 const email = {source_id:'ews-id-1',sender:'sender@example.org',subject:'Meeting at noon',received:'12 Oct 2026, 10:00 AM IST'};
+
+test('Cloudflare trigger dispatches only the fixed workflow and concurrent events dispatch once',async t=>{
+  const s=setup(),time=Date.parse('2026-10-11T11:20:03Z');
+  t.mock.method(Date,'now',()=>time);
+  s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  const mock=t.mock.method(globalThis,'fetch',async(url,options)=>{
+    assert.equal(url,'https://api.github.com/repos/answami99/Mail-System/actions/workflows/poll.yml/dispatches');
+    assert.equal(options.redirect,'manual');
+    assert.deepEqual(JSON.parse(options.body),{ref:'main',inputs:{force:false}});
+    assert.equal(options.headers.Authorization,'Bearer test-dispatch-token');
+    return new Response(null,{status:204});
+  });
+  const controller={scheduledTime:time-3000};
+  const results=await Promise.all([scheduleChecks(controller,s.env),scheduleChecks(controller,s.env)]);
+  assert.equal(results.filter(x=>x.accepted).length,1);
+  assert.equal(mock.mock.callCount(),1);
+  assert.equal((await first(s.env,'SELECT status FROM scheduler_ticks')).status,'accepted');
+  assert.equal((await scheduleChecks(controller,s.env)).skipped,true);
+  assert.equal(mock.mock.callCount(),1);
+});
+
+test('Cloudflare trigger ignores stale/future events and office-hour boundaries include Sunday',async t=>{
+  const s=setup();let clock=Date.parse('2026-10-11T04:00:00Z');
+  t.mock.method(Date,'now',()=>clock);s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  const mock=t.mock.method(globalThis,'fetch',async()=>new Response(null,{status:204}));
+  assert.equal((await scheduleChecks({scheduledTime:clock-1},s.env)).skipped,true);
+  assert.equal((await scheduleChecks({scheduledTime:clock+120000},s.env)).skipped,true);
+  assert.equal((await scheduleChecks({scheduledTime:clock},s.env)).accepted,true);
+  clock=Date.parse('2026-10-11T04:10:00Z');
+  assert.equal((await scheduleChecks({scheduledTime:clock-600000},s.env)).skipped,true);
+  clock=Date.parse('2026-10-11T12:30:00Z');
+  assert.equal((await scheduleChecks({scheduledTime:clock},s.env)).accepted,true);
+  clock=Date.parse('2026-10-11T12:40:00Z');
+  assert.equal((await scheduleChecks({scheduledTime:clock},s.env)).skipped,true);
+  assert.equal((await scheduleChecks({},s.env)).skipped,true);
+  assert.equal(mock.mock.callCount(),2);
+});
+
+test('dispatch retries one transient error, persists safe failure and can retry without exposing exceptions',async t=>{
+  const s=setup(),clock=Date.parse('2026-10-11T11:20:00Z');
+  t.mock.method(Date,'now',()=>clock);s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  const mock=t.mock.method(globalThis,'fetch',async()=>{throw new Error('private request data');});
+  await assert.rejects(scheduleChecks({scheduledTime:clock},s.env),/dispatch failed/);
+  assert.equal(mock.mock.callCount(),2);
+  let tick=await first(s.env,'SELECT * FROM scheduler_ticks');
+  assert.equal(tick.status,'failed');assert.equal(tick.http_status,0);
+  assert(!JSON.stringify(tick).includes('private request data'));
+  mock.mock.mockImplementation(async()=>new Response(null,{status:204}));
+  assert.equal((await scheduleChecks({scheduledTime:clock},s.env)).accepted,true);
+  tick=await first(s.env,'SELECT * FROM scheduler_ticks');
+  assert.equal(tick.attempts,2);assert.equal(tick.status,'accepted');
+});
+
+test('missing token, redirects, permission denial and rate limits fail visibly without following/retrying',async t=>{
+  const s=setup();let clock=Date.parse('2026-10-11T11:20:00Z');
+  t.mock.method(Date,'now',()=>clock);
+  const mock=t.mock.method(globalThis,'fetch',async()=>new Response(null,{status:403}));
+  await assert.rejects(scheduleChecks({scheduledTime:clock},s.env));
+  assert.equal(mock.mock.callCount(),0);
+  s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  for(const status of [302,403,429]) {
+    clock+=600000;mock.mock.mockImplementation(async()=>new Response(null,{status}));
+    await assert.rejects(scheduleChecks({scheduledTime:clock},s.env));
+    assert.equal((await first(s.env,'SELECT status,http_status FROM scheduler_ticks WHERE slot=?',slotAt(new Date(clock)))).http_status,status);
+  }
+  assert.equal(mock.mock.callCount(),3);
+});
+
+test('expired trigger lease recovers and trigger history is bounded to seven days',async t=>{
+  const s=setup(),clock=Date.parse('2026-10-11T11:20:00Z'),time=clock/1000,slot=slotAt(new Date(clock));
+  t.mock.method(Date,'now',()=>clock);s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';
+  await run(s.env,"INSERT INTO scheduler_ticks(slot,status,attempted_at,lease,lease_until) VALUES(?,'dispatching',?,'expired',?)",slot,time-100,time-10);
+  await run(s.env,"INSERT INTO scheduler_ticks(slot,status,attempted_at,lease,lease_until) VALUES('old','accepted',?,'old',0)",time-8*86400);
+  t.mock.method(globalThis,'fetch',async()=>new Response(null,{status:204}));
+  await scheduleChecks({scheduledTime:clock},s.env);
+  assert.equal((await first(s.env,'SELECT status,attempts FROM scheduler_ticks WHERE slot=?',slot)).attempts,2);
+  assert.equal(await first(s.env,"SELECT slot FROM scheduler_ticks WHERE slot='old'"),null);
+});
+
+test('host sees dispatch acceptance separately from inbox success; normal users see only their mailbox',async t=>{
+  const s=setup();await s.enroll(2,'Alice');
+  const clock=Date.parse('2026-10-11T11:20:00Z');t.mock.method(Date,'now',()=>clock);
+  await run(s.env,"INSERT INTO scheduler_ticks(slot,status,attempted_at,finished_at,http_status,lease,lease_until) VALUES(?,'accepted',?,?,204,'done',0)",slotAt(new Date(clock)),clock/1000,clock/1000);
+  await s.chat(1,'🕒 Last checks');
+  assert.match(s.sent.at(-1).text,/Cloudflare trigger: GitHub accepted the check request/);
+  assert.match(s.sent.at(-1).text,/does not mean the inbox check has finished/);
+  assert(!s.sent.at(-1).text.includes('✅ Successful'));
+  await s.chat(2,'🕒 Last check');assert(!s.sent.at(-1).text.includes('Cloudflare trigger:'));
+  await run(s.env,"UPDATE scheduler_ticks SET status='failed',http_status=403");
+  await s.chat(1,'🕒 Last checks');assert.match(s.sent.at(-1).text,/Request failed \(HTTP 403\)/);
+});
 
 test('first checks run outside schedule and deliver only to the newly joined account', async () => {
   const s=setup(), key=await s.enroll(2,'Alice');
