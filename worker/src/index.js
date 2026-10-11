@@ -2,6 +2,7 @@ import {all, first, json, now, run, sameSecret, seal, unseal, Telegram, Telegram
 import {handleUpdate} from './bot.js';
 import {jobs} from './jobs.js';
 import {queueInitial} from './initial.js';
+import {receivePush} from './push.js';
 
 export async function handle(request, env, tg = new Telegram(env)) {
   const path = new URL(request.url).pathname;
@@ -9,6 +10,7 @@ export async function handle(request, env, tg = new Telegram(env)) {
   if (request.method !== 'POST') return json({error:'Not found'}, 404);
   let setupStage = 'authentication';
   try {
+    if (path.startsWith('/exchange/')) return await receivePush(request,env);
     if (path === '/telegram') {
       if (!await sameSecret(env, request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.WEBHOOK_SECRET)) return json({error:'Forbidden'}, 403);
     } else if (path.startsWith('/internal/')) {

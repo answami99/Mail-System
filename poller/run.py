@@ -10,6 +10,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from .mail import connect, unread, classify
+from .push import ensure_push
 
 logging.disable(logging.CRITICAL)
 
@@ -66,6 +67,7 @@ def scan(api, job, slot, budget_ok, connector=connect, reader=unread):
     result, found = 'success', 0
     try:
         account = connector(claimed['email'], claimed['password'])
+        ensure_push(api, identity, account)
         for email in reader(account, known, job['key_id'], job['revision'], budget_ok):
             api.post('ingest', {**identity, 'email': email})
             found += 1
@@ -102,6 +104,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='Explicit manual run outside scheduled hours')
     parser.add_argument('--initial', action='store_true', help='Check only queued newly connected Telegram accounts')
+    parser.add_argument('--events', action='store_true', help='Check only mailboxes with durable new-mail events')
     parser.add_argument('--probe', action='store_true', help='Read-only local EWS login test; no Telegram transmission')
     args = parser.parse_args()
     if args.probe:
@@ -121,7 +124,7 @@ def main():
     failures, found = 0, 0
     try:
         api = Backend()
-        batch = api.post('jobs', {'force': args.force, 'initial': args.initial})
+        batch = api.post('jobs', {'force': args.force, 'initial': args.initial, 'events': args.events})
         if not batch['slot']:
             print('Outside the scheduled work window; no mail checks or sends performed.')
             return 0

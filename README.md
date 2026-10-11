@@ -22,7 +22,7 @@ One notification per email per enrolled Telegram account. The body and attachmen
 - First person to redeem a key becomes its mailbox manager. Only that manager (or the host for its own mailbox) can change its email/password. The host can transfer management with `/owner`.
 - The host has a separate mailbox under its own key, with the same enrollment flow.
 - Initial checks include all existing unread Inbox mail. Each later check finds unread mail and skips durable delivery records. An email read or moved out of Inbox before a poll will not be picked up.
-- Checks are scheduled **Monday–Friday, 09:30 through 18:00 IST inclusive**, every 30 minutes: 18 runs/day, 90/week. No holiday calendar. Last-slot delayed execution is allowed until 18:29 IST; delivery can finish later. A manual forced run intentionally overrides hours.
+- Real-time delivery operates **24 hours, every day**, as requested. EWS Inbox `NewMailEvent` callbacks trigger a GitHub workflow through Cloudflare. Recovery checks run twice an hour at UTC minutes 7 and 37, including weekends; these also renew subscriptions when heartbeats stop. GitHub startup and scheduling delays still apply.
 - New Telegram accounts get a separate first check after their mailbox is ready, including outside work hours. This check delivers only to the joining account. `GITHUB_DISPATCH_TOKEN` enables immediate workflow requests; GitHub startup can still be delayed. Without it, enrollment stays queued until a regular check. Repeating `/start` on an enrolled account does not request another check.
 - D1 stores encrypted credentials and queued notification metadata, plus delivery receipts. GitHub runners are temporary and do not store state in commits, caches or artifacts.
 - Retries retain queued notifications even if an email later becomes read. Completed delivery records normally prevent repeats. A new Telegram account receives the unread backlog at the next check.
@@ -31,13 +31,13 @@ One notification per email per enrolled Telegram account. The body and attachmen
 
 ## Hosting choice and limits
 
-GitHub Actions performs the scheduled mail checks. Cloudflare's small HTTPS webhook handles bot replies immediately, and D1 holds persistent state. GitHub alone is not an always-on webhook host or a durable application database.
+GitHub Actions fetches notification metadata after a new-mail callback and performs scheduled recovery checks. Cloudflare's small HTTPS webhook handles bot replies immediately, and D1 holds persistent state. GitHub alone is not an always-on webhook host or a durable application database.
 
 This targets free allowances, **not unlimited hosting or guaranteed delivery times**:
 
 | Service | Published allowance or constraint | Consequence |
 |---|---|---|
-| GitHub Free, private repository | 2,000 Actions minutes/month | 18 runs × 22 weekdays = 396 runs; at 2 billed minutes/run about 792 minutes, at 5 minutes about 1,980, before tests/other usage. Measure actual billing. |
+| GitHub Free, private repository | 2,000 Actions minutes/month | 24/7 recovery alone is about 1,440 runs in a 30-day month, plus new-mail event jobs. A private repository could exceed free minutes. This repository is public; standard hosted runners have different billing. Measure usage and keep secrets out of code. |
 | GitHub schedules | Runs may be delayed or dropped; public-repo schedules disable after 60 inactive days | No exact 30-minute reliability guarantee. Inspect Actions and `/health`. |
 | Cloudflare Workers Free | 100,000 requests/day, 10 ms CPU per invocation | Small requests, per-message ingestion/delivery, no browser automation. Real deployment/load testing required; local tests do not measure Cloudflare CPU quotas. |
 | D1 Free | 5M rows read/day, 100k written/day, 5 GB total | Ten small mailboxes are a reasonable starting target, but backlog volume and retained delivery records determine usage. |
@@ -63,10 +63,18 @@ No password viewing command, mailbox contents endpoint for users, or body collec
 - Exactly-once delivery cannot be guaranteed across Telegram and D1. If Telegram accepts a send but the response/receipt write is lost, a retry can produce a duplicate. The implementation favors retry over silent loss.
 - Revoking data on the host cannot delete copies already received on users' devices. `protect_content` discourages forwarding/saving but cannot stop every form of copying.
 - Unread scans are bounded by run time; large mailboxes may require several runs. GitHub jobs have a 15-minute cap and a 12-minute work budget. EWS IDs can change when messages move; a message moved back into Inbox may notify again.
-- Polling itself is not push. A message arriving just after a check may wait about 30 minutes plus queue delays; evening/weekend mail waits until Monday or the next workday's checks if still unread.
+- Callback delivery is event-driven, but GitHub runner startup means it is not guaranteed to arrive within seconds. Multiple events may be batched. A missed callback is recovered by the next successful scheduled check if the email remains unread. Reading or moving mail before the event job scans it can suppress its notification, matching the unread-only behavior.
 - `/health` and GitHub failure notifications help detect errors; there is no independent external uptime watchdog in this version. If the scheduler itself stops, the bot does not automatically repair it.
 
 See [SETUP.md](SETUP.md) for deployment and acceptance checks.
+
+## Production push callbacks
+
+The runner subscribes only to Inbox `NewMailEvent`, with one-minute idle heartbeats. Exchange calls the existing Cloudflare Worker directly. The callback URL contains a random 256-bit token limited to that mailbox subscription; only its HMAC is stored. Confirmed subscription and Inbox IDs are matched by HMAC, XML is size/depth bounded, and DTD/entity declarations are rejected. Callback tokens and subscription IDs must not be copied into logs or screenshots.
+
+New events are recorded durably before the fixed `push.yml` workflow is requested. Dispatches are batched to at most one per minute across mailboxes; heartbeats retry unsuccessful dispatches. Replayed events are deduplicated. Each scan acknowledges only its starting event sequence, preserving arrivals during the scan. Credential changes retire old callback URLs; key revocation and inactive membership suppress delivery. Subscription status appears in `/status`.
+
+Subscriptions are renewed when the last heartbeat becomes stale, during initial or recovery checks. Outbound HTTPS from the Exchange server must be allowed. Registration alone does not prove callback reachability; live callback and automatic delivery acceptance must pass. Failed push maintenance does not disable the working unread-mail scanner.
 
 ## Manual real-time trial
 
@@ -74,7 +82,7 @@ The **Test realtime notifications** workflow tests EWS streaming on the Host mai
 
 An Inbox new-mail event triggers a metadata-only fetch and the usual encrypted notification queue. The test measures approximate event/delivery delays, checks unread status, closes the stream, and unsubscribes. Logs contain counts and timings, not mail contents or subscription IDs. A final normal forced poll restores mailbox status and provides the usual delivery fallback; its sends are separate from the real-time result. A timed-out trial is inconclusive, not proof that subscriptions are unsupported.
 
-This is a bounded manual test, not an always-on deployment. The existing weekday polling schedule continues. A permanent streaming listener would need continuous hosting, reconnection and subscription recovery; GitHub workflow startup time is excluded from the measured in-session delay.
+This is a bounded manual test, not an always-on deployment. The production callback path and 24/7 recovery checks are separate from this bounded streaming trial. A permanent streaming listener would need continuous hosting, reconnection and subscription recovery; GitHub workflow startup time is excluded from the measured in-session delay.
 
 ## Local tests
 

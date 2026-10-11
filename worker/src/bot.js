@@ -101,6 +101,7 @@ async function admin(env, user, command, argument, tg, updateId) {
       stmt(env, 'DELETE FROM states WHERE user_id IN (SELECT user_id FROM members WHERE key_id=?)', argument),
       stmt(env, 'UPDATE members SET active=0 WHERE key_id=?', argument),
       stmt(env, 'DELETE FROM credentials WHERE key_id=?', argument),
+      stmt(env, 'DELETE FROM push_subscriptions WHERE key_id=?', argument),
       stmt(env, 'DELETE FROM messages WHERE key_id=?', argument)
     ]);
     return tg.send(user, 'Key revoked; credentials and queued mail removed. Already delivered Telegram messages are not erased.');
@@ -162,7 +163,10 @@ export async function handleUpdate(env, update, tg) {
     const c = await first(env, 'SELECT last_checked,status,paused FROM credentials WHERE key_id=?', m.key_id);
     const count = await first(env, `SELECT COUNT(*) AS n FROM deliveries d JOIN messages msg ON msg.id=d.message_id
       WHERE msg.key_id=? AND d.user_id=? AND d.state<>'sent'`, m.key_id, user);
-    return tg.send(user, `${m.name}\n${c?.status || 'No mailbox connected'}${c?.paused ? ' (paused)' : ''}\nLast successful check: ${c?.last_checked ? new Date(c.last_checked * 1000).toLocaleString('en-GB', {timeZone:'Asia/Kolkata'}) + ' IST' : 'never'}\nPending notifications: ${count.n}\nSchedule: Mon–Fri, 09:30–18:00 IST, every 30 minutes. GitHub runs may be delayed.`);
+    const push=await first(env,'SELECT state,last_seen FROM push_subscriptions WHERE key_id=?',m.key_id);
+    const hours=(await first(env,"SELECT value FROM settings WHERE id='realtime_hours'"))?.value==='always'?'24 hours, every day':'Mon–Fri, 09:30–18:00 IST';
+    const realtime=push?.state==='active' && push.last_seen>now()-300?'Connected':push?.state==='active'?'Awaiting server callback':'Awaiting subscription';
+    return tg.send(user, `${m.name}\n${c?.status || 'No mailbox connected'}${c?.paused ? ' (paused)' : ''}\nLast successful check: ${c?.last_checked ? new Date(c.last_checked * 1000).toLocaleString('en-GB', {timeZone:'Asia/Kolkata'}) + ' IST' : 'never'}\nPending notifications: ${count.n}\nReal-time: ${realtime}. Hours: ${hours}. Event delivery includes GitHub startup delay. Scheduled checks remain as recovery.`);
   }
   if (command === '/email' || command === '/password' || pending?.stage === 'email' || pending?.stage === 'password') {
     if (!canEdit(env, m)) return tg.send(user, 'Only the mailbox manager or host can change credentials for this key.');
@@ -188,7 +192,8 @@ export async function handleUpdate(env, update, tg) {
         last_checked=CASE WHEN revision=excluded.revision THEN last_checked ELSE NULL END,
         revision=excluded.revision,paused=0,failures=0,status='Credentials updated; awaiting check',lease=NULL,lease_until=0,last_slot=NULL`,
         m.key_id, await seal(env, `email:${m.key_id}`, email), await seal(env, `password:${m.key_id}`, text), revision),
-        stmt(env, 'DELETE FROM states WHERE user_id=?', user)];
+        stmt(env, 'DELETE FROM states WHERE user_id=?', user),
+        stmt(env, 'DELETE FROM push_subscriptions WHERE key_id=?', m.key_id)];
       if (old && !sameMailbox) changes.push(stmt(env, 'DELETE FROM messages WHERE key_id=?', m.key_id));
       await env.DB.batch(changes);
       const recipients = !old || !sameMailbox ? await all(env, 'SELECT user_id FROM members WHERE key_id=? AND active=1 AND blocked=0',m.key_id) : [{user_id:user}];

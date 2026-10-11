@@ -9,7 +9,7 @@ import {queueInitial} from '../src/initial.js';
 
 // Real SQLite constraints/transactions behind the small D1 async interface.
 class D1 {
-  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
+  constructor() { this.db = new DatabaseSync(':memory:'); for (const name of ['0001.sql','0002_initial_checks.sql','0003_push.sql']) this.db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')); }
   prepare(sql) {
     const query = this.db.prepare(sql);
     const make = args => ({
@@ -293,4 +293,84 @@ test('setup requires runner authentication and cannot redirect updates or replac
   assert.equal(dispatch.mock.callCount(),1);
   await run(s.env,'UPDATE initial_checks SET state=\'done\' WHERE key_id=?',key.id);
   assert.equal((await s.api('/internal/setup',{})).body.initial_checks_queued,0);
+});
+
+const pushSoap=(sid='subscription-private',item='mail-private',folder='inbox-private',watermark='watermark-1',status=false)=>`<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:SendNotification xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:SendNotificationResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Notification><t:SubscriptionId>${sid}</t:SubscriptionId><t:PreviousWatermark>old</t:PreviousWatermark><t:MoreEvents>false</t:MoreEvents><t:${status?'StatusEvent':'NewMailEvent'}><t:Watermark>${watermark}</t:Watermark>${status?'':`<t:TimeStamp>2026-10-12T04:15:00Z</t:TimeStamp><t:ItemId Id="${item}" ChangeKey="private"/><t:ParentFolderId Id="${folder}"/>`}</t:${status?'StatusEvent':'NewMailEvent'}></m:Notification></m:SendNotificationResponseMessage></m:ResponseMessages></m:SendNotification></s:Body></s:Envelope>`;
+async function registeredPush(s,key) {
+  const lease=await s.claim(key);
+  const prep=(await s.api('/internal/push/prepare',lease)).body;
+  assert(prep.needed);
+  assert.equal((await s.api('/internal/push/confirm',{...lease,generation:prep.generation,subscription_id:'subscription-private',folder_id:'inbox-private'})).status,200);
+  return {lease,prep,callback:async (xml=pushSoap(),url=prep.callback_url)=>handle(new Request(url,{method:'POST',body:xml}),s.env,s.tg)};
+}
+test('push callbacks authenticate token, subscription and folder; XML attacks fail closed',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),p=await registeredPush(s,key);
+  const bad=new URL(p.prep.callback_url);bad.searchParams.set('token','forged');
+  assert.equal((await p.callback(pushSoap(),bad.href)).status,403);
+  assert.equal((await p.callback(pushSoap('wrong'))).status,403);
+  assert.equal((await p.callback(pushSoap('subscription-private','one','other-folder'))).status,200);
+  assert.equal((await first(s.env,'SELECT event_seq FROM push_subscriptions')).event_seq,0);
+  for(const xml of ['<!DOCTYPE x [<!ENTITY a SYSTEM "file:///etc/passwd">]>'+pushSoap(),pushSoap().replace('NoError','&evil;'),pushSoap().replace('</m:Notification>','</wrong>'),pushSoap().replace('services/2006/types','fake/namespace')]) assert.equal((await p.callback(xml)).status,400);
+  assert.equal((await p.callback('x'.repeat(65537))).status,413);
+  assert.equal((await p.callback()).status,200);
+  assert.equal((await first(s.env,'SELECT event_seq FROM push_subscriptions')).event_seq,1);
+  await s.chat(2,'/password');await s.chat(2,'updated-secret');
+  assert.match(await (await p.callback()).text(),/Unsubscribe/);
+});
+test('push duplicates, idle status, and event snapshots never lose later arrivals',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),p=await registeredPush(s,key);
+  await run(s.env,"UPDATE settings SET value='always' WHERE id='realtime_hours'");
+  await s.api('/internal/finish',{...p.lease,slot:'manual:registration',result:'success'});
+  await p.callback();await p.callback();await p.callback(pushSoap(undefined,undefined,undefined,'status',true));
+  assert.equal((await first(s.env,'SELECT event_seq FROM push_subscriptions')).event_seq,1);
+  const batch=(await s.api('/internal/jobs',{events:true})).body;
+  assert.equal(batch.jobs.length,1);
+  const lease=(await s.api('/internal/claim',{...batch.jobs[0],slot:batch.slot})).body;
+  await p.callback(pushSoap(undefined,'second',undefined,'watermark-2'));
+  await s.api('/internal/finish',{...lease,slot:batch.slot,result:'success'});
+  assert.deepEqual({...await first(s.env,'SELECT event_seq,done_seq FROM push_subscriptions')},{event_seq:2,done_seq:1});
+  assert.equal((await s.api('/internal/jobs',{events:true})).body.jobs.length,1);
+  const next=(await s.api('/internal/claim',{key_id:key.id,revision:1,slot:'event:second'})).body;
+  await s.api('/internal/finish',{...next,slot:'event:second',result:'network'});
+  assert.equal((await first(s.env,'SELECT done_seq FROM push_subscriptions')).done_seq,1);
+  await s.chat(1,`/revoke ${key.id}`);
+  assert.match(await (await p.callback()).text(),/Unsubscribe/);
+  assert.equal((await s.api('/internal/jobs',{events:true})).body.jobs.length,0);
+});
+test('push dispatch has fixed destination and no private inputs, throttles bursts and retries failure',async t=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),p=await registeredPush(s,key);
+  await run(s.env,"UPDATE settings SET value='always' WHERE id='realtime_hours'");
+  s.env.GITHUB_DISPATCH_TOKEN='test-dispatch-token';let calls=0,fail=true;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    calls++;assert.equal(url,'https://api.github.com/repos/answami99/Mail-System/actions/workflows/push.yml/dispatches');
+    assert.equal(options.redirect,'manual');assert.deepEqual(JSON.parse(options.body),{ref:'main'});
+    return new Response(null,{status:fail?503:204});
+  });
+  await p.callback();assert.equal(calls,1);
+  assert.equal((await first(s.env,'SELECT requested_at FROM push_dispatch')).requested_at,0);
+  fail=false;await p.callback(pushSoap(undefined,undefined,undefined,'status',true));assert.equal(calls,2);
+  await p.callback(pushSoap(undefined,'second',undefined,'watermark-2'));assert.equal(calls,2);
+  await run(s.env,'UPDATE push_dispatch SET requested_at=0');
+  await p.callback(pushSoap(undefined,undefined,undefined,'status',true));assert.equal(calls,3);
+  await s.api('/internal/finish',{...p.lease,slot:'manual:first',result:'success'});
+  const next=(await s.api('/internal/claim',{key_id:key.id,revision:1,slot:'event:all'})).body;
+  await s.api('/internal/finish',{...next,slot:'event:all',result:'success'});
+  await run(s.env,'UPDATE push_dispatch SET requested_at=0');
+  await p.callback(pushSoap(undefined,undefined,undefined,'status',true));assert.equal(calls,3);
+});
+test('push provisioning race triggers no work, stale subscription renews, failed ones stop',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),lease=await s.claim(key);
+  const prep=(await s.api('/internal/push/prepare',lease)).body;
+  assert.equal((await s.api('/internal/push/prepare',lease)).body.needed,false);
+  const response=await handle(new Request(prep.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg);
+  assert.match(await response.text(),/>OK</);
+  assert.equal((await first(s.env,'SELECT event_seq FROM push_subscriptions')).event_seq,0);
+  await s.api('/internal/push/confirm',{...lease,generation:prep.generation,subscription_id:'subscription-private',folder_id:'inbox-private'});
+  assert.equal((await s.api('/internal/push/prepare',lease)).body.needed,false);
+  await run(s.env,'UPDATE push_subscriptions SET last_seen=0,created_at=?',now()-400);
+  const next=(await s.api('/internal/push/prepare',lease)).body;
+  assert(next.needed);assert.notEqual(next.generation,prep.generation);
+  assert.match(await (await handle(new Request(prep.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
+  await s.api('/internal/push/failed',{...lease,generation:next.generation});
+  assert.match(await (await handle(new Request(next.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
 });

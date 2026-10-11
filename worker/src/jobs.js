@@ -1,14 +1,16 @@
 import {all, first, formatEmail, json, now, run, seal, stmt, unseal} from './common.js';
 
-export function slotAt(date = new Date()) {
+import {pushControl, pushWindow, dispatchPush} from './push.js';
+
+export function slotAt(date = new Date(), always = false) {
   const local = new Date(date.getTime() + 330 * 60000);
   const day = local.getUTCDay(), minute = local.getUTCHours() * 60 + local.getUTCMinutes();
   // A late GitHub run can service the most recent slot until 18:29 IST.
-  if (day === 0 || day === 6 || minute < 570 || minute >= 1110) return null;
+  if (!always && (day === 0 || day === 6 || minute < 570 || minute >= 1110)) return null;
   const slot = Math.floor(minute / 30) * 30;
   return `${local.toISOString().slice(0, 10)}T${String(Math.floor(slot / 60)).padStart(2, '0')}:${String(slot % 60).padStart(2, '0')}+05:30`;
 }
-async function validLease(env, body) {
+export async function validLease(env, body) {
   return first(env, `SELECT c.*,i.user_id AS initial_user,i.id AS initial_request FROM credentials c JOIN access_keys k ON k.id=c.key_id
     LEFT JOIN initial_checks i ON i.lease=c.lease AND i.key_id=c.key_id AND i.revision=c.revision AND i.state='pending'
     WHERE c.key_id=? AND c.revision=? AND c.lease=? AND c.lease_until>? AND c.paused=0 AND k.active=1`,
@@ -20,6 +22,7 @@ async function mailId(key, revision, source) {
 }
 
 export async function jobs(env, route, body, tg) {
+  if (route.startsWith('/internal/push/')) return pushControl(env,route,body,await validLease(env,body));
   if (route === '/internal/jobs') {
     await env.DB.batch([
       stmt(env, 'DELETE FROM states WHERE expires<?', now()),
@@ -29,7 +32,14 @@ export async function jobs(env, route, body, tg) {
         SELECT 1 FROM deliveries d JOIN members m ON m.user_id=d.user_id AND m.key_id=messages.key_id
         WHERE d.message_id=messages.id AND d.state<>'sent' AND m.active=1 AND m.blocked=0)`)
     ]);
-    const slot = body.initial === true ? `initial:${crypto.randomUUID()}` : body.force === true ? `manual:${crypto.randomUUID()}` : slotAt();
+    if (body.events === true) {
+      if (!await pushWindow(env)) return json({slot:null,jobs:[]});
+      const rows=await all(env,`SELECT c.key_id,c.revision FROM push_subscriptions p JOIN credentials c ON c.key_id=p.key_id AND c.revision=p.revision
+        JOIN access_keys k ON k.id=c.key_id WHERE p.state='active' AND p.event_seq>p.done_seq AND c.paused=0 AND c.lease_until<? AND k.active=1
+        AND EXISTS(SELECT 1 FROM members m WHERE m.key_id=c.key_id AND m.active=1 AND m.blocked=0)`,now());
+      return json({slot:`event:${crypto.randomUUID()}`,jobs:rows});
+    }
+    const slot = body.initial === true ? `initial:${crypto.randomUUID()}` : body.force === true ? `manual:${crypto.randomUUID()}` : slotAt(new Date(),(await first(env,"SELECT value FROM settings WHERE id='realtime_hours'"))?.value==='always');
     if (!slot) return json({slot: null, jobs: []});
     if (body.initial === true) {
       const rows = await all(env, `SELECT c.key_id,c.revision,i.id AS initial_request FROM initial_checks i
@@ -54,7 +64,10 @@ export async function jobs(env, route, body, tg) {
       if (!initial || !body.slot.startsWith('initial:')) return json({error:'Unavailable'},409);
     } else if (body.slot.startsWith('initial:')) return json({error:'Initial request required'},400);
     const lease = crypto.randomUUID();
-    const c = await first(env, `UPDATE credentials SET lease=?,lease_until=? WHERE key_id=? AND revision=?
+    const c = await first(env, `UPDATE credentials SET lease=?,lease_until=?,
+      push_generation=(SELECT generation FROM push_subscriptions WHERE key_id=credentials.key_id AND revision=credentials.revision),
+      push_seq=(SELECT event_seq FROM push_subscriptions WHERE key_id=credentials.key_id AND revision=credentials.revision)
+      WHERE key_id=? AND revision=?
       AND lease_until<? AND paused=0 AND (last_slot IS NULL OR last_slot<>?)
       AND EXISTS(SELECT 1 FROM access_keys WHERE id=key_id AND active=1) RETURNING *`,
       lease, now() + 900, body.key_id, body.revision, now(), body.slot);
@@ -106,6 +119,9 @@ export async function jobs(env, route, body, tg) {
       failures=CASE WHEN ?='success' THEN 0 WHEN ?=1 THEN failures+1 ELSE failures END,
       paused=CASE WHEN ?=1 AND failures>=2 THEN 1 ELSE paused END WHERE key_id=? AND lease=? RETURNING paused,failures`,
       leaseInfo.initial_request ? 1 : 0, body.slot, statuses[body.result], body.result, now(), body.result, fatal ? 1 : 0, fatal ? 1 : 0, body.key_id, body.lease);
+    if (body.result === 'success' && !leaseInfo.initial_request && leaseInfo.push_generation) await run(env,
+      'UPDATE push_subscriptions SET done_seq=MAX(done_seq,?) WHERE key_id=? AND revision=? AND generation=?',
+      leaseInfo.push_seq || 0,body.key_id,body.revision,leaseInfo.push_generation);
     if (body.result === 'success') await run(env, `UPDATE initial_checks SET state='done',lease=NULL
       WHERE key_id=? AND revision=? AND state='pending' AND (? IS NULL OR id=?)`,
       body.key_id,body.revision,leaseInfo.initial_request,leaseInfo.initial_request);
@@ -118,6 +134,7 @@ export async function jobs(env, route, body, tg) {
         try { await tg.send(recipient, msg); } catch { /* /health remains authoritative */ }
       }
     }
+    await dispatchPush(env);
     return json({ok:true});
   }
   if (route === '/internal/pending') {
