@@ -30,8 +30,9 @@ function setup() {
   const env = {DB:new D1(), ENCRYPTION_KEY:Buffer.alloc(32,1).toString('base64'), KEY_PEPPER:'test-pepper-long-value',
     RUNNER_TOKEN:'test-runner-token-32-characters-minimum', WEBHOOK_SECRET:'test-webhook-secret', HOST_ACCESS_KEY:'12345678', HOST_TELEGRAM_ID:'1',MAX_KEYS:'10',MAX_MEMBERS_PER_KEY:'5'};
   const sent = [], deleted = [];
-  const tg = {send:async (id,text) => {sent.push({id,text});return {message_id:sent.length};},
+  const tg = {send:async (id,text,markup) => {sent.push({id,text,markup});return {message_id:sent.length};},
     delete:async (id,msg) => {deleted.push({id,msg});return true;},
+    call:async()=>({ok:true}),
     email:async (id,email) => {sent.push({id,text:formatEmail(email)});return {message_id:sent.length};}};
   let update = 0;
   const api = async (path, body, header) => {
@@ -39,7 +40,9 @@ function setup() {
       (path === '/telegram' ? {'X-Telegram-Bot-Api-Secret-Token':env.WEBHOOK_SECRET} : {Authorization:`Bearer ${env.RUNNER_TOKEN}`}),body:JSON.stringify(body)}),env,tg);
     return {status:response.status,body:await response.json()};
   };
-  const chat = (user,text,id=++update,type='private') => api('/telegram',{update_id:id,message:{message_id:id,from:{id:user,first_name:`User ${user}`},chat:{id:user,type},text}});
+  const rawChat = (user,text,id=++update,type='private') => api('/telegram',{update_id:id,message:{message_id:id,from:{id:user,first_name:`User ${user}`},chat:{id:user,type},text}});
+  const chat=async (...args)=>{const result=await rawChat(...args);const pending=await first(env,'SELECT stage FROM states WHERE user_id=?',args[0]);
+    if(pending?.stage==='name') await rawChat(args[0],`User ${args[0]}`);return result;};
   const enroll = async (user,name) => {
     if (!await first(env,'SELECT * FROM members WHERE user_id=1')) await chat(1,'/start 12345678');
     await chat(1,`/new ${name}`);
@@ -54,7 +57,7 @@ function setup() {
     const revision = (await first(env,'SELECT revision FROM credentials WHERE key_id=?',key.id)).revision;
     return (await api('/internal/claim',{key_id:key.id,revision,slot:'manual:test'})).body;
   };
-  return {env,tg,sent,deleted,api,chat,enroll,claim};
+  return {env,tg,sent,deleted,api,chat,rawChat,enroll,claim};
 }
 const email = {source_id:'ews-id-1',sender:'sender@example.org',subject:'Meeting at noon',received:'12 Oct 2026, 10:00 AM IST'};
 
@@ -373,4 +376,57 @@ test('push provisioning race triggers no work, stale subscription renews, failed
   assert.match(await (await handle(new Request(prep.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
   await s.api('/internal/push/failed',{...lease,generation:next.generation});
   assert.match(await (await handle(new Request(next.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
+});
+
+test('named invitation welcomes the organisation and requires a declared name before enrollment or credentials',async()=>{
+  const s=setup();await s.chat(1,'/start 12345678');await s.chat(1,'/new');
+  assert.match(s.sent.at(-1).text,/person or organisation/);
+  await s.chat(1,'Office / Jaipur');
+  const key=await first(s.env,"SELECT * FROM access_keys WHERE name='Office / Jaipur'");
+  const code=await unseal(s.env,`key:${key.id}`,key.code_cipher);
+  await s.rawChat(2,`/start ${code}`);
+  assert.match(s.sent.at(-1).text,/Welcome to Office \/ Jaipur!/);
+  assert.match(s.sent.at(-1).text,/host can see this name.*prevent misuse/);
+  assert.equal(await first(s.env,'SELECT * FROM members WHERE user_id=2'),null);
+  assert.equal(await first(s.env,'SELECT * FROM credentials WHERE key_id=?',key.id),null);
+  await s.rawChat(2,'   ');assert.equal((await first(s.env,'SELECT stage FROM states WHERE user_id=2')).stage,'name');
+  await s.rawChat(2,'A'.repeat(65));assert.equal((await first(s.env,'SELECT stage FROM states WHERE user_id=2')).stage,'name');
+  await s.rawChat(2,'Meera Sharma');
+  assert.equal((await first(s.env,'SELECT label FROM members WHERE user_id=2')).label,'Meera Sharma');
+  assert.equal((await first(s.env,'SELECT stage FROM states WHERE user_id=2')).stage,'email');
+  assert.equal((await first(s.env,'SELECT owner_id FROM access_keys WHERE id=?',key.id)).owner_id,2);
+  await s.rawChat(2,'office@rajasthan.gov.in');await s.rawChat(2,'private-password');
+  await s.rawChat(3,`/start ${code}`);await s.rawChat(3,'Another colleague');
+  assert.equal((await first(s.env,'SELECT label FROM members WHERE user_id=3')).label,'Another colleague');
+  assert.equal(await first(s.env,'SELECT stage FROM states WHERE user_id=3'),null);
+  assert.match(s.sent.at(-1).text,/first unread-mail check/);
+  await s.rawChat(2,`/start ${code}`);
+  assert.equal((await first(s.env,'SELECT label FROM members WHERE user_id=2')).label,'Meera Sharma');
+});
+test('name enrollment rechecks revocation and expired invitations',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');
+  await s.rawChat(3,`/start ${key.code}`);await s.chat(1,`/revoke ${key.id}`);await s.rawChat(3,'Late join');
+  assert.equal(await first(s.env,'SELECT user_id FROM members WHERE user_id=3'),null);
+  assert.match(s.sent.at(-1).text,/no longer available/);
+});
+test('host can manage accounts by named buttons without Telegram IDs; forged actions cannot remove users',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice');
+  await s.chat(1,'/keys');
+  const menu=s.sent.at(-1);assert(menu.markup.inline_keyboard.some(row=>row[0].text==='Manage Alice'));
+  const callback=(user,data,id)=>s.api('/telegram',{update_id:id,callback_query:{id:`callback-${id}`,from:{id:user},message:{chat:{id:user,type:'private'}},data}});
+  await callback(2,`remove:${key.id}:2`,900);
+  assert.equal((await first(s.env,'SELECT active FROM members WHERE user_id=2')).active,1);
+  await callback(1,`members:${key.id}`,901);
+  const members=s.sent.at(-1);assert.match(members.text,/Alice/);assert(!members.text.includes('Telegram ID'));
+  const remove=members.markup.inline_keyboard.flat().find(b=>b.text==='Remove User 2');assert(remove);
+  await callback(1,remove.callback_data,902);
+  assert.equal((await first(s.env,'SELECT blocked FROM members WHERE user_id=2')).blocked,1);
+  await callback(1,`members:${key.id}`,903);
+  const allow=s.sent.at(-1).markup.inline_keyboard.flat().find(b=>b.text==='Allow User 2');assert(allow);
+  await callback(1,allow.callback_data,904);assert.equal((await first(s.env,'SELECT blocked FROM members WHERE user_id=2')).blocked,0);
+  await callback(1,`revoke:${key.id}`,905);
+  assert.match(s.sent.at(-1).text,/Revoke Alice\?/);
+  assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,1);
+  await callback(1,`revoke:${key.id}:confirm`,906);
+  assert.equal((await first(s.env,'SELECT active FROM access_keys WHERE id=?',key.id)).active,0);
 });

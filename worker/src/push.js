@@ -89,8 +89,11 @@ export async function receivePush(request,env) {
     JOIN access_keys k ON k.id=p.key_id WHERE p.generation=? AND k.active=1 AND c.paused=0
     AND EXISTS(SELECT 1 FROM members m WHERE m.key_id=p.key_id AND m.active=1 AND m.blocked=0)`,generation);
   if(!p || p.state==='failed') return pushResponse('Unsubscribe');
-  if(typeof token!=='string' || !await sameSecret(env,await digest(env,token),p.token_hash)) return new Response('Forbidden',{status:403});
   await run(env,'UPDATE push_subscriptions SET last_request=? WHERE generation=?',now(),generation);
+  if(typeof token!=='string' || !await sameSecret(env,await digest(env,token),p.token_hash)) {
+    await run(env,"UPDATE push_subscriptions SET callback_error='Invalid callback token' WHERE generation=?",generation);
+    return new Response('Forbidden',{status:403});
+  }
   const reader=request.body?.getReader();if(!reader) return new Response('Body required',{status:400});
   const chunks=[];let size=0;
   while(true) {const {done,value}=await reader.read();if(done) break;size+=value.length;

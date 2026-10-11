@@ -52,7 +52,7 @@ export async function handle(request, env, tg = new Telegram(env)) {
       const previous = await tg.call('getWebhookInfo',{});
       if (previous.url && previous.url !== url) return json({error:'Bot already connected elsewhere'},409);
       setupStage = 'telegram-webhook-register';
-      await tg.call('setWebhook',{url,secret_token:env.WEBHOOK_SECRET,max_connections:1,allowed_updates:['message'],drop_pending_updates:false});
+      await tg.call('setWebhook',{url,secret_token:env.WEBHOOK_SECRET,max_connections:1,allowed_updates:['message','callback_query'],drop_pending_updates:false});
       setupStage = 'telegram-webhook-verify';
       const info = await tg.call('getWebhookInfo',{});
       if (info.url !== url || info.max_connections !== 1) return json({error:'Webhook verification failed'},503);

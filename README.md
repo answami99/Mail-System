@@ -16,10 +16,10 @@ One notification per email per enrolled Telegram account. The body and attachmen
 
 ## Behavior
 
-- Host creates a named, random **8-digit fixed code** using `/new Name`. Codes have no expiry.
+- Host creates a named, random **8-digit fixed code** using `/new Person or organisation`, or `/new` followed by the name. Codes have no expiry. `/keys` presents named management buttons for viewing members, removing/allowing an account, and confirming key revocation; finding a Telegram ID is unnecessary.
 - Host access also requires a fixed code, but only the configured numeric Telegram account can use it.
 - Multiple Telegram accounts may enroll under one key; they **share that key's mailbox**. One Telegram account used on several devices is one membership and receives one notification synced by Telegram.
-- First person to redeem a key becomes its mailbox manager. Only that manager (or the host for its own mailbox) can change its email/password. The host can transfer management with `/owner`.
+- A new account sees a welcome addressed to the person/organisation named on its code, then must enter its own name before enrollment. The prompt explains that the host can see the name to identify users and help prevent misuse. Names are self-declared labels, not verified identity. First person to finish joining becomes its mailbox manager. Only that manager (or the host for its own mailbox) can change its email/password. The host can transfer management with `/owner`.
 - The host has a separate mailbox under its own key, with the same enrollment flow.
 - Initial checks include all existing unread Inbox mail. Each later check finds unread mail and skips durable delivery records. An email read or moved out of Inbox before a poll will not be picked up.
 - Real-time delivery operates **24 hours, every day**, as requested. EWS Inbox `NewMailEvent` callbacks trigger a GitHub workflow through Cloudflare. Recovery checks run twice an hour at UTC minutes 7 and 37, including weekends; these also renew subscriptions when heartbeats stop. GitHub startup and scheduling delays still apply.

@@ -85,8 +85,8 @@ export class Telegram {
     if (!result.ok) throw new TelegramError(result.error_code, result.parameters?.retry_after || 60);
     return result.result;
   }
-  async send(chat, text) {
-    return this.call('sendMessage', {chat_id: chat, text, protect_content: true,
+  async send(chat, text, reply_markup = undefined) {
+    return this.call('sendMessage', {chat_id: chat, text, reply_markup, protect_content: true,
       link_preview_options: {is_disabled: true}});
   }
   async delete(chat, id) {
