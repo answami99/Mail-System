@@ -68,6 +68,14 @@ No password viewing command, mailbox contents endpoint for users, or body collec
 
 See [SETUP.md](SETUP.md) for deployment and acceptance checks.
 
+## Manual real-time trial
+
+The **Test realtime notifications** workflow tests EWS streaming on the Host mailbox only. It first creates and removes a `NewMailEvent` subscription to check permission, then listens for up to five minutes. Wait until the listener reports ready before sending a harmless new email, and leave the email unread. Existing unread mail, status events, and events from other folders cannot pass the trial.
+
+An Inbox new-mail event triggers a metadata-only fetch and the usual encrypted notification queue. The test measures approximate event/delivery delays, checks unread status, closes the stream, and unsubscribes. Logs contain counts and timings, not mail contents or subscription IDs. A final normal forced poll restores mailbox status and provides the usual delivery fallback; its sends are separate from the real-time result. A timed-out trial is inconclusive, not proof that subscriptions are unsupported.
+
+This is a bounded manual test, not an always-on deployment. The existing weekday polling schedule continues. A permanent streaming listener would need continuous hosting, reconnection and subscription recovery; GitHub workflow startup time is excluded from the measured in-session delay.
+
 ## Local tests
 
 ```sh

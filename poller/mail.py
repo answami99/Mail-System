@@ -64,13 +64,17 @@ def unread(account, known, key_id, revision, budget_ok=lambda: True):
             raise PartialScan()
         if message_key(key_id, revision, item.id) in known:
             continue
-        subject = item.subject or ''
-        if len(subject.encode('utf-16-le')) // 2 > 3300:
-            # A rare overlong subject remains one Telegram message; clearly mark its truncation.
-            subject = subject.encode('utf-16-le')[:6500].decode('utf-16-le', errors='ignore') + '…'
-        sender = (item.sender.email_address if item.sender else None) or '(unknown sender)'
-        yield {'source_id': item.id, 'subject': subject, 'sender': sender,
-               'received': item.datetime_received.astimezone(ZoneInfo('Asia/Kolkata')).strftime('%d %b %Y, %I:%M %p IST')}
+        yield metadata(item)
+
+
+def metadata(item):
+    """The same metadata-only notification format for scans and event-driven tests."""
+    subject = item.subject or ''
+    if len(subject.encode('utf-16-le')) // 2 > 3300:
+        subject = subject.encode('utf-16-le')[:6500].decode('utf-16-le', errors='ignore') + '…'
+    sender = (item.sender.email_address if item.sender else None) or '(unknown sender)'
+    return {'source_id': item.id, 'subject': subject, 'sender': sender,
+            'received': item.datetime_received.astimezone(ZoneInfo('Asia/Kolkata')).strftime('%d %b %Y, %I:%M %p IST')}
 
 
 class PartialScan(Exception):
