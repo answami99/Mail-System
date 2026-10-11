@@ -2,7 +2,7 @@
 
 Repository: [answami99/Mail-System](https://github.com/answami99/Mail-System) · Telegram: [@RajasthanMail_bot](https://t.me/RajasthanMail_bot)
 
-Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed and Telegram webhook connected.** Host mailbox enrollment, live Exchange API compatibility, end-to-end delivery and free-tier capacity still need verification.
+Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, Telegram webhook and automatic first-check dispatch verified.** The live Exchange request currently fails authentication; email delivery and free-tier capacity are not yet verified.
 
 ## What a notification looks like
 
@@ -57,7 +57,7 @@ No password viewing command, mailbox contents endpoint for users, or body collec
 
 ## Known practical limits
 
-- **EWS availability is unverified.** Successful OWA login does not prove the EWS endpoint or NTLM/basic auth is enabled. No CAPTCHA does not prove automation/API access is available. This implementation does not claim an OWA-browser fallback. If EWS is blocked, a separately tested OWA connector or administrator-supported method is needed.
+- **Live EWS login is not working yet.** A public endpoint check from GitHub reaches EWS and receives HTTP 401 with NTLM advertised. The authenticated check returns `UnauthorizedError`; this can involve credentials, login-name format, or API access policy. Successful OWA login does not prove EWS access. This implementation has no OWA-browser fallback; an administrator-supported method or a separately tested connector is needed if EWS access cannot be established.
 - An EWS read-only API request leaves unread flags unchanged; the full mailbox password itself is not a read-only credential.
 - Exactly-once delivery cannot be guaranteed across Telegram and D1. If Telegram accepts a send but the response/receipt write is lost, a retry can produce a duplicate. The implementation favors retry over silent loss.
 - Revoking data on the host cannot delete copies already received on users' devices. `protect_content` discourages forwarding/saving but cannot stop every form of copying.
