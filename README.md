@@ -2,7 +2,7 @@
 
 Repository: [answami99/Mail-System](https://github.com/answami99/Mail-System) · Telegram: [@RajasthanMail_bot](https://t.me/RajasthanMail_bot)
 
-Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, and live notification delivery verified on 11 October 2026.** Correcting the saved password resolved the Exchange login failure. The live test delivered three notifications, preserved all three unread emails, and sent zero duplicates on a repeat scan. Telegram webhook and automatic first-check dispatch are also verified. An actual scheduled run and sustained free-tier usage still need observation.
+Implementation for a closed Telegram bot with GitHub Actions polling and a Cloudflare Worker + D1 backend. **Backend deployed, host enrolled, and live notification delivery verified on 11 October 2026.** Correcting the saved password resolved the Exchange login failure. The live test delivered three notifications, preserved all three unread emails, and sent zero duplicates on a repeat scan. Telegram webhook and automatic first-check dispatch are also verified. Named onboarding and host management buttons are deployed. **Continuous real-time delivery is not active:** a bounded NTLM streaming test passed, but the Exchange server has not called the deployed push receiver. Scheduled checks are configured for 24/7; an actual scheduled run and sustained usage still need observation.
 
 ## What a notification looks like
 
@@ -22,7 +22,7 @@ One notification per email per enrolled Telegram account. The body and attachmen
 - A new account sees a welcome addressed to the person/organisation named on its code, then must enter its own name before enrollment. The prompt explains that the host can see the name to identify users and help prevent misuse. Names are self-declared labels, not verified identity. First person to finish joining becomes its mailbox manager. Only that manager (or the host for its own mailbox) can change its email/password. The host can transfer management with `/owner`.
 - The host has a separate mailbox under its own key, with the same enrollment flow.
 - Initial checks include all existing unread Inbox mail. Each later check finds unread mail and skips durable delivery records. An email read or moved out of Inbox before a poll will not be picked up.
-- Real-time delivery operates **24 hours, every day**, as requested. EWS Inbox `NewMailEvent` callbacks trigger a GitHub workflow through Cloudflare. Recovery checks run twice an hour at UTC minutes 7 and 37, including weekends; these also renew subscriptions when heartbeats stop. GitHub startup and scheduling delays still apply.
+- The configured notification window is **24 hours, every day**, as requested. Scheduled unread-mail checks run twice an hour at UTC minutes 7 and 37, including weekends. The EWS push receiver can request a GitHub workflow when callbacks arrive, but live callback acceptance has not passed, so it currently provides no real-time delivery. GitHub startup and scheduling delays still apply.
 - New Telegram accounts get a separate first check after their mailbox is ready, including outside work hours. This check delivers only to the joining account. `GITHUB_DISPATCH_TOKEN` enables immediate workflow requests; GitHub startup can still be delayed. Without it, enrollment stays queued until a regular check. Repeating `/start` on an enrolled account does not request another check.
 - D1 stores encrypted credentials and queued notification metadata, plus delivery receipts. GitHub runners are temporary and do not store state in commits, caches or artifacts.
 - Retries retain queued notifications even if an email later becomes read. Completed delivery records normally prevent repeats. A new Telegram account receives the unread backlog at the next check.
@@ -31,7 +31,7 @@ One notification per email per enrolled Telegram account. The body and attachmen
 
 ## Hosting choice and limits
 
-GitHub Actions fetches notification metadata after a new-mail callback and performs scheduled recovery checks. Cloudflare's small HTTPS webhook handles bot replies immediately, and D1 holds persistent state. GitHub alone is not an always-on webhook host or a durable application database.
+GitHub Actions currently performs scheduled unread-mail checks. The deployed callback path can also request scans once server callbacks become reachable. Cloudflare's small HTTPS webhook handles bot replies immediately, and D1 holds persistent state. GitHub alone is not an always-on webhook host or a durable application database.
 
 This targets free allowances, **not unlimited hosting or guaranteed delivery times**:
 
@@ -68,15 +68,19 @@ No password viewing command, mailbox contents endpoint for users, or body collec
 
 See [SETUP.md](SETUP.md) for deployment and acceptance checks.
 
-## Production push callbacks
+## Deployed push receiver — callback delivery not verified
+
+**Live result, 11 October 2026:** Exchange accepted a push subscription in [run 38129502381](https://github.com/answami99/Mail-System/actions/runs/38129502381), but Cloudflare recorded zero callbacks, idle heartbeats or new-mail events during the automatic test. The new test email was later delivered by the manual NTLM fallback in [run 38130158351](https://github.com/answami99/Mail-System/actions/runs/38130158351), which is not a real-time success. That run also rejected Basic authentication while NTLM continued working. The exact server-side callback failure requires Exchange/network diagnostics; an outbound firewall block is a possibility, not a proven cause. Continuous streaming on an always-running host remains the tested alternative.
 
 The runner subscribes only to Inbox `NewMailEvent`, with one-minute idle heartbeats. Exchange calls the existing Cloudflare Worker directly. The callback URL contains a random 256-bit token limited to that mailbox subscription; only its HMAC is stored. Confirmed subscription and Inbox IDs are matched by HMAC, XML is size/depth bounded, and DTD/entity declarations are rejected. Callback tokens and subscription IDs must not be copied into logs or screenshots.
 
 New events are recorded durably before the fixed `push.yml` workflow is requested. Dispatches are batched to at most one per minute across mailboxes; heartbeats retry unsuccessful dispatches. Replayed events are deduplicated. Each scan acknowledges only its starting event sequence, preserving arrivals during the scan. Credential changes retire old callback URLs; key revocation and inactive membership suppress delivery. Subscription status appears in `/status`.
 
-Subscriptions are renewed when the last heartbeat becomes stale, during initial or recovery checks. Outbound HTTPS from the Exchange server must be allowed. Registration alone does not prove callback reachability; live callback and automatic delivery acceptance must pass. Failed push maintenance does not disable the working unread-mail scanner.
+Previously working subscriptions are renewed when the last heartbeat becomes stale, during initial or recovery checks. A subscription that has never received a callback is retried at most every six hours to avoid repeated failed registrations. `/status` explicitly reports unavailable callbacks after five minutes and the use of scheduled checks. Outbound HTTPS from the Exchange server must be allowed. Registration alone does not prove callback reachability; live callback and automatic delivery acceptance must pass. Failed push maintenance does not disable the working unread-mail scanner.
 
 ## Manual real-time trial
+
+**Live streaming passed:** [run 38124281886](https://github.com/answami99/Mail-System/actions/runs/38124281886) received a new Inbox event and delivered the test notification about nine seconds after the server received it, preserving unread status. The host confirmed Telegram delivery. This result applies only to the active test listener.
 
 The **Test realtime notifications** workflow tests EWS streaming on the Host mailbox only. It first creates and removes a `NewMailEvent` subscription to check permission, then listens for up to five minutes. Wait until the listener reports ready before sending a harmless new email, and leave the email unread. Existing unread mail, status events, and events from other folders cannot pass the trial.
 

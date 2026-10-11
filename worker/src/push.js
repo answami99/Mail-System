@@ -132,10 +132,14 @@ export async function pushControl(env,route,body,c) {
     const old=await first(env,'SELECT * FROM push_subscriptions WHERE key_id=?',c.key_id);
     if(old?.revision===c.revision && old.state==='active' && Math.max(old.created_at,old.last_seen)>now()-300) return json({needed:false});
     if(old?.revision===c.revision && old.state==='provisioning' && old.created_at>now()-300) return json({needed:false});
+    // A server that cannot reach this callback must not create a replacement
+    // subscription on every recovery scan. Keep accepting late callbacks and
+    // retry at most every six hours until one has actually been received.
+    if(old?.revision===c.revision && !old.last_seen && old.created_at>now()-21600) return json({needed:false});
     const generation=crypto.randomUUID(), token=Array.from(crypto.getRandomValues(new Uint8Array(32)),x=>x.toString(16).padStart(2,'0')).join('');
     await run(env,`INSERT INTO push_subscriptions(key_id,revision,generation,token_hash,created_at) VALUES(?,?,?,?,?)
       ON CONFLICT(key_id) DO UPDATE SET revision=excluded.revision,generation=excluded.generation,token_hash=excluded.token_hash,
-      subscription_hash=NULL,folder_hash=NULL,state='provisioning',created_at=excluded.created_at,last_seen=0,event_seq=0,done_seq=0`,
+      subscription_hash=NULL,folder_hash=NULL,state='provisioning',created_at=excluded.created_at,last_seen=0,last_request=0,callback_error=NULL,event_seq=0,done_seq=0`,
       c.key_id,c.revision,generation,await digest(env,token),now());
     return json({needed:true,generation,callback_url:`${ORIGIN}/exchange/${generation}?token=${token}`});
   }

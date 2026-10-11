@@ -207,9 +207,12 @@ export async function handleUpdate(env, update, tg) {
     const c = await first(env, 'SELECT last_checked,status,paused FROM credentials WHERE key_id=?', m.key_id);
     const count = await first(env, `SELECT COUNT(*) AS n FROM deliveries d JOIN messages msg ON msg.id=d.message_id
       WHERE msg.key_id=? AND d.user_id=? AND d.state<>'sent'`, m.key_id, user);
-    const push=await first(env,'SELECT state,last_seen FROM push_subscriptions WHERE key_id=?',m.key_id);
+    const push=await first(env,'SELECT state,last_seen,created_at FROM push_subscriptions WHERE key_id=?',m.key_id);
     const hours=(await first(env,"SELECT value FROM settings WHERE id='realtime_hours'"))?.value==='always'?'24 hours, every day':'Mon–Fri, 09:30–18:00 IST';
-    const realtime=push?.state==='active' && push.last_seen>now()-300?'Connected':push?.state==='active'?'Awaiting server callback':'Awaiting subscription';
+    const realtime=push?.state==='active' && push.last_seen>now()-300?'Receiving server callbacks':
+      push?.state==='active' && push.created_at>now()-300?'Awaiting server callback':
+      push?.state==='active'?'Server callbacks unavailable; using scheduled checks':
+      push?.state==='failed'?'Subscription unavailable; using scheduled checks':'Awaiting subscription';
     return tg.send(user, `${m.name}\n${c?.status || 'No mailbox connected'}${c?.paused ? ' (paused)' : ''}\nLast successful check: ${c?.last_checked ? new Date(c.last_checked * 1000).toLocaleString('en-GB', {timeZone:'Asia/Kolkata'}) + ' IST' : 'never'}\nPending notifications: ${count.n}\nReal-time: ${realtime}. Hours: ${hours}. Event delivery includes GitHub startup delay. Scheduled checks remain as recovery.`);
   }
   if (command === '/email' || command === '/password' || pending?.stage === 'email' || pending?.stage === 'password') {

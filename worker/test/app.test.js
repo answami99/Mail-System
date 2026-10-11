@@ -370,12 +370,27 @@ test('push provisioning race triggers no work, stale subscription renews, failed
   assert.equal((await first(s.env,'SELECT event_seq FROM push_subscriptions')).event_seq,0);
   await s.api('/internal/push/confirm',{...lease,generation:prep.generation,subscription_id:'subscription-private',folder_id:'inbox-private'});
   assert.equal((await s.api('/internal/push/prepare',lease)).body.needed,false);
-  await run(s.env,'UPDATE push_subscriptions SET last_seen=0,created_at=?',now()-400);
+  await run(s.env,'UPDATE push_subscriptions SET last_seen=?,created_at=?',now()-400,now()-1000);
   const next=(await s.api('/internal/push/prepare',lease)).body;
   assert(next.needed);assert.notEqual(next.generation,prep.generation);
   assert.match(await (await handle(new Request(prep.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
   await s.api('/internal/push/failed',{...lease,generation:next.generation});
   assert.match(await (await handle(new Request(next.callback_url,{method:'POST',body:pushSoap()}),s.env,s.tg)).text(),/Unsubscribe/);
+});
+
+test('unreachable push callbacks back off without claiming realtime health or disabling scans',async()=>{
+  const s=setup(),key=await s.enroll(2,'Alice'),p=await registeredPush(s,key);
+  await run(s.env,'UPDATE push_subscriptions SET created_at=?',now()-600);
+  assert.equal((await s.api('/internal/push/prepare',p.lease)).body.needed,false);
+  await s.chat(2,'/status');assert.match(s.sent.at(-1).text,/Server callbacks unavailable; using scheduled checks/);
+  await s.api('/internal/push/failed',{...p.lease,generation:p.prep.generation});
+  assert.equal((await s.api('/internal/push/prepare',p.lease)).body.needed,false);
+  await s.chat(2,'/status');assert.match(s.sent.at(-1).text,/Subscription unavailable; using scheduled checks/);
+  assert.equal((await first(s.env,'SELECT paused FROM credentials WHERE key_id=?',key.id)).paused,0);
+  await run(s.env,'UPDATE push_subscriptions SET created_at=?,last_request=9,callback_error=?',now()-21601,'Previous failure');
+  const next=(await s.api('/internal/push/prepare',p.lease)).body;assert(next.needed);
+  const row=await first(s.env,'SELECT last_request,callback_error FROM push_subscriptions WHERE key_id=?',key.id);
+  assert.equal(row.last_request,0);assert.equal(row.callback_error,null);
 });
 
 test('named invitation welcomes the organisation and requires a declared name before enrollment or credentials',async()=>{
