@@ -24,9 +24,14 @@ def main():
             raise ValueError()
     except HTTPError as error:
         safe = {'Forbidden', 'Service not configured', 'Invalid private configuration', 'Unexpected bot token',
-                'Bot already connected elsewhere', 'Webhook verification failed', 'Temporary service failure', 'Not found'}
+                'Bot already connected elsewhere', 'Webhook verification failed', 'Temporary service failure', 'Not found', 'Setup step failed'}
         try:
-            reason = json.loads(error.read(2048)).get('error')
+            details = json.loads(error.read(2048))
+            reason = details.get('error')
+            if details.get('stage') in {'authentication','encryption','database','telegram-token','telegram-webhook-read','telegram-webhook-register','telegram-webhook-verify'}:
+                print('Setup stage:',details['stage'])
+            if type(details.get('telegram_code')) is int:
+                print('Telegram status:',details['telegram_code'])
         except Exception:
             reason = None
         print('Backend HTTP status:', error.code)

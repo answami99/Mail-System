@@ -1,4 +1,4 @@
-import {first, json, now, run, sameSecret, seal, unseal, Telegram} from './common.js';
+import {first, json, now, run, sameSecret, seal, unseal, Telegram, TelegramError} from './common.js';
 import {handleUpdate} from './bot.js';
 import {jobs} from './jobs.js';
 
@@ -6,6 +6,7 @@ export async function handle(request, env, tg = new Telegram(env)) {
   const path = new URL(request.url).pathname;
   if (path === '/healthz' && request.method === 'GET') return json({ok:true, service:'private-email-bot'});
   if (request.method !== 'POST') return json({error:'Not found'}, 404);
+  let setupStage = 'authentication';
   try {
     if (path === '/telegram') {
       if (!await sameSecret(env, request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.WEBHOOK_SECRET)) return json({error:'Forbidden'}, 403);
@@ -36,13 +37,19 @@ export async function handle(request, env, tg = new Telegram(env)) {
       if (!/^\d+$/.test(env.HOST_TELEGRAM_ID || '') || !/^\d{6,8}$/.test(env.HOST_ACCESS_KEY || '') ||
           !/^[A-Za-z0-9_-]{32,256}$/.test(env.WEBHOOK_SECRET || '') || (env.KEY_PEPPER || '').length < 32)
         return json({error:'Invalid private configuration'},503);
+      setupStage = 'encryption';
       if (await unseal(env,'setup',await seal(env,'setup','ready')) !== 'ready') throw new Error('Encryption check failed');
+      setupStage = 'database';
       await first(env,'SELECT id FROM access_keys LIMIT 1');
+      setupStage = 'telegram-token';
       const me = await tg.call('getMe',{});
       if (me.username?.toLowerCase() !== 'rajasthanmail_bot') return json({error:'Unexpected bot token'},409);
+      setupStage = 'telegram-webhook-read';
       const previous = await tg.call('getWebhookInfo',{});
       if (previous.url && previous.url !== url) return json({error:'Bot already connected elsewhere'},409);
+      setupStage = 'telegram-webhook-register';
       await tg.call('setWebhook',{url,secret_token:env.WEBHOOK_SECRET,max_connections:1,allowed_updates:['message'],drop_pending_updates:false});
+      setupStage = 'telegram-webhook-verify';
       const info = await tg.call('getWebhookInfo',{});
       if (info.url !== url || info.max_connections !== 1) return json({error:'Webhook verification failed'},503);
       return json({ok:true,bot:'RajasthanMail_bot',webhook_configured:true});
@@ -59,7 +66,8 @@ export async function handle(request, env, tg = new Telegram(env)) {
     await handleUpdate(env, body, tg);
     await run(env, 'UPDATE updates SET state=\'done\',expires=? WHERE id=?', now()+172800, body.update_id);
     return json({ok:true});
-  } catch {
+  } catch (error) {
+    if (path === '/internal/setup') return json({error:'Setup step failed',stage:setupStage,telegram_code:error instanceof TelegramError ? error.code : null},503);
     // Never serialize exceptions: network libraries can include tokens, passwords, or mail bodies.
     return json({error:'Temporary service failure'}, 503);
   }
