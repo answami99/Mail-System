@@ -24,7 +24,7 @@ def main():
             raise ValueError()
     except HTTPError as error:
         safe = {'Forbidden', 'Service not configured', 'Invalid private configuration', 'Unexpected bot token',
-                'Bot already connected elsewhere', 'Webhook verification failed', 'Temporary service failure', 'Not found', 'Setup step failed'}
+                'Bot already connected elsewhere', 'Webhook verification failed', 'Temporary service failure', 'Not found', 'Setup step failed', 'Invalid bot token format'}
         try:
             details = json.loads(error.read(2048))
             reason = details.get('error')

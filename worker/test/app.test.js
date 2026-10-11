@@ -200,7 +200,7 @@ test('expired password entry cannot overwrite credentials', async () => {
 
 test('setup requires runner authentication and cannot redirect updates or replace another bot webhook', async () => {
   const s=setup();
-  s.env.KEY_PEPPER='p'.repeat(32); s.env.WEBHOOK_SECRET='w'.repeat(32);
+  s.env.TELEGRAM_BOT_TOKEN='12345:'+ 'a'.repeat(35); s.env.KEY_PEPPER='p'.repeat(32); s.env.WEBHOOK_SECRET='w'.repeat(32);
   const calls=[]; let destination=''; let username='RajasthanMail_bot';
   s.tg.call=async (method,data) => {
     calls.push({method,data});

@@ -68,7 +68,7 @@ export class TelegramError extends Error {
   constructor(code, retry = 60) { super('Telegram request failed'); this.code = code; this.retry = retry; }
 }
 export class Telegram {
-  constructor(env) { this.token = env.TELEGRAM_BOT_TOKEN; }
+  constructor(env) { this.token = (env.TELEGRAM_BOT_TOKEN || '').trim(); }
   async call(method, data) {
     const form = data instanceof FormData;
     let response;
@@ -79,7 +79,7 @@ export class Telegram {
       });
     } catch { throw new TelegramError(0); }
     let result;
-    try { result = await response.json(); } catch { throw new TelegramError(0); }
+    try { result = await response.json(); } catch { throw new TelegramError(response.status); }
     if (!result.ok) throw new TelegramError(result.error_code, result.parameters?.retry_after || 60);
     return result.result;
   }

@@ -41,6 +41,7 @@ export async function handle(request, env, tg = new Telegram(env)) {
       if (await unseal(env,'setup',await seal(env,'setup','ready')) !== 'ready') throw new Error('Encryption check failed');
       setupStage = 'database';
       await first(env,'SELECT id FROM access_keys LIMIT 1');
+      if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test((env.TELEGRAM_BOT_TOKEN || '').trim())) return json({error:'Invalid bot token format'},503);
       setupStage = 'telegram-token';
       const me = await tg.call('getMe',{});
       if (me.username?.toLowerCase() !== 'rajasthanmail_bot') return json({error:'Unexpected bot token'},409);
