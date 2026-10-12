@@ -33,6 +33,8 @@ jobs:
           BOT_BACKEND_URL: ${{ secrets.BOT_BACKEND_URL }}
           BOT_RUNNER_TOKEN: ${{ secrets.BOT_RUNNER_TOKEN }}
           EWS_AUTH_TYPE: ${{ vars.EWS_AUTH_TYPE || 'NTLM' }}
+          # Allowlisted connection stage/status only; never log credentials or mail.
+          EWS_DIAGNOSTICS: 'true'
           MANUAL_FORCE: ${{ inputs.force }}
         run: |
           if [ "$MANUAL_FORCE" = "true" ]; then
