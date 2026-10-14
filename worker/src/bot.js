@@ -1,6 +1,6 @@
 import {all, canEdit, digest, first, isHost, member, now, randomCode, rate, run, seal, stmt, unseal, sameSecret} from './common.js';
 import {queueInitial} from './initial.js';
-import {callbackCommands, menuCommands, showHelp, showLastChecks, showMailbox, showMenu, withMenus} from './ui.js';
+import {callbackCommands, menuCommands, membersWithNotificationCounts, showHelp, showLastChecks, showMailbox, showMenu, withMenus} from './ui.js';
 
 const help = '/status — last check and delivery backlog\n/email — connect or change mailbox\n/password — change password\n/pause — pause your notifications\n/resume_notifications — resume your notifications\n/stop — leave the bot after confirmation\n/cancel — cancel entry';
 const adminHelp = '\n/new Person or organisation — create a named code\n/keys — manage people and organisations\n/members KEY_ID — accounts\n/remove TELEGRAM_ID — remove code access\n/allow TELEGRAM_ID — restore code access\n/blocked — manage the blacklist\n/blacklist TELEGRAM_ID — block every code\n/unblacklist TELEGRAM_ID — remove global block\n/revoke KEY_ID — revoke code and erase mailbox data\n/owner KEY_ID TELEGRAM_ID — change mailbox manager\n/resume KEY_ID — retry a paused mailbox\n/health — all mailbox status';
@@ -122,9 +122,10 @@ async function hostButtons(env, query, tg) {
   if(action==='check') return showMailbox(env,user,tg,keyId);
   if(action==='resume') {await admin(env,user,'/resume',keyId,tg,0);return showMailbox(env,user,tg,keyId);}
   if(action==='members') {
-    const rows=await all(env,'SELECT m.user_id,m.label,m.active,m.blocked,m.notifications_paused,b.user_id AS blacklisted FROM members m LEFT JOIN blacklist b ON b.user_id=m.user_id WHERE m.key_id=? ORDER BY m.joined_at,m.user_id',keyId);
+    const rows=await membersWithNotificationCounts(env,keyId);
     const text=`${key.name}\nKey: ${!key.active?'revoked':keyId==='host'?'your private host key':await unseal(env,`key:${keyId}`,key.code_cipher)}\nTelegram accounts: ${rows.filter(r=>r.active&&!r.blocked).length}\n`+
-      (rows.map((r,i)=>`${i+1}. ${r.label} — ${r.blacklisted?'blacklisted':r.blocked?'code access removed':r.active?'active'+(r.notifications_paused?' · notifications paused':''):'inactive'}`).join('\n')||'No accounts have joined yet.');
+      (rows.map((r,i)=>`${i+1}. ${r.label} — ${r.blacklisted?'blacklisted':r.blocked?'code access removed':r.active?'active'+(r.notifications_paused?' · notifications paused':''):'inactive'}\n   Email notifications sent: ${r.notifications_sent}`).join('\n')||'No accounts have joined yet.')+
+      '\n\nCounts use saved delivery history. Pending messages and bot replies are excluded.';
     const buttons=rows.filter(r=>String(r.user_id)!==env.HOST_TELEGRAM_ID).map(r=>[{text:`${r.blocked?'Allow':'Remove'} ${r.label}`.slice(0,64),callback_data:`${r.blocked?'allow':'remove'}:${keyId}:${r.user_id}`}]);
     for(const r of rows.filter(r=>String(r.user_id)!==env.HOST_TELEGRAM_ID)) buttons.push([{text:`Delete permanently: ${r.label}`.slice(0,64),callback_data:`deleteuser:${keyId}:${r.user_id}`}]);
     for(const r of rows.filter(r=>String(r.user_id)!==env.HOST_TELEGRAM_ID && !r.blacklisted)) buttons.push([{text:`Blacklist: ${r.label}`.slice(0,64),callback_data:`blacklist:${keyId}:${r.user_id}`}]);
@@ -132,6 +133,7 @@ async function hostButtons(env, query, tg) {
     for(const r of removed) buttons.push([{text:`Allow deleted account ${r.user_id}`,callback_data:`allowdeleted:${keyId}:${r.user_id}`}]);
     for(const r of rows.filter(r=>key.active&&r.active&&!r.blocked&&r.user_id!==key.owner_id&&keyId!=='host'))
       buttons.push([{text:`Make manager: ${r.label}`.slice(0,64),callback_data:`manager:${keyId}:${r.user_id}`}]);
+    buttons.push([{text:'Refresh counts',callback_data:`members:${keyId}`}]);
     buttons.push([{text:'Last check',callback_data:`check:${keyId}`},{text:'All access codes',callback_data:'menu:keys'}]);
     if(keyId!=='host' && key.active) buttons.push([{text:`Revoke ${key.name}`.slice(0,64),callback_data:`revoke:${keyId}`}]);
     if(keyId!=='host') buttons.push([{text:'Delete organisation permanently',callback_data:`deleteorg:${keyId}`}]);
@@ -218,8 +220,8 @@ async function admin(env, user, command, argument, tg, updateId) {
     return tg.send(user, texts.join('\n\n') || 'No keys.', {inline_keyboard:buttons});
   }
   if (command === '/members') {
-    const rows = await all(env, 'SELECT user_id,label,active,blocked FROM members WHERE key_id=?', argument);
-    return tg.send(user, rows.map(m => `${m.label}: ${m.user_id} — ${m.blocked ? 'blocked' : m.active ? 'active' : 'inactive'}`).join('\n') || 'No accounts for that key ID.');
+    const rows = await membersWithNotificationCounts(env,argument);
+    return tg.send(user, rows.map(m => `${m.label}: ${m.user_id} — ${m.blocked ? 'blocked' : m.active ? 'active' : 'inactive'}\nEmail notifications sent: ${m.notifications_sent} (saved history)`).join('\n\n') || 'No accounts for that key ID.');
   }
   if (command === '/remove' || command === '/allow') {
     if (!/^\d+$/.test(argument) || isHost(env, argument)) return tg.send(user, 'Use a non-host Telegram numeric ID.');

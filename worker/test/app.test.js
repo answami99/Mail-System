@@ -284,6 +284,46 @@ test('new member gets unread backlog despite existing recipients having received
   await s.api('/internal/deliver',{id:queue[0]});
   assert.equal(s.sent.at(-1).id,3);
 });
+test('notification counts include only confirmed sends per account and are host scoped', async t => {
+  const s=setup(),a=await s.enroll(2,'Alice');
+  await s.chat(4,`/start ${a.code}`);
+  const b=await s.enroll(3,'Bob'),identity=await s.claim(a),other=await s.claim(b);
+  await s.api('/internal/ingest',{...identity,email});
+  await s.api('/internal/ingest',{...identity,email:{...email,source_id:'still-pending'}});
+  await s.api('/internal/ingest',{...other,email});
+  const delivered=await first(s.env,'SELECT id FROM deliveries WHERE user_id=2 LIMIT 1');
+  const failed=await first(s.env,'SELECT id FROM deliveries WHERE user_id=4 LIMIT 1');
+  await s.api('/internal/deliver',{id:delivered.id});
+  await s.api('/internal/deliver',{id:delivered.id}); // Already sent: must not increment again.
+  const sending=t.mock.method(s.tg,'email',async()=>{throw new Error('Temporary Telegram error');});
+  await s.api('/internal/deliver',{id:failed.id});
+  sending.mock.restore();
+  const callback=(user,data,id)=>s.api('/telegram',{update_id:id,callback_query:{id:String(id),from:{id:user},message:{chat:{id:user,type:'private'}},data}});
+  await callback(1,`members:${a.id}`,3000);
+  const view=s.sent.at(-1);
+  assert.match(view.text,/User 2 — active\n   Email notifications sent: 1/);
+  assert.match(view.text,/User 4 — active\n   Email notifications sent: 0/);
+  assert(!view.text.includes('User 3'));
+  assert(view.markup.inline_keyboard.flat().some(b=>b.text==='Refresh counts'));
+  await s.chat(1,`/members ${a.id}`);
+  assert.match(s.sent.at(-1).text,/User 2: 2 — active\nEmail notifications sent: 1/);
+  await s.chat(2,'📬 My mailbox');
+  assert.match(s.sent.at(-1).text,/Email notifications sent to you: 1/);
+  assert(!s.sent.at(-1).text.includes('User 4'));
+  const before=s.sent.length;
+  await callback(3,`members:${a.id}`,3001);
+  assert.equal(s.sent.length,before);
+  await run(s.env,'UPDATE deliveries SET retry_at=0 WHERE id=?',failed.id);
+  await s.api('/internal/deliver',{id:failed.id});
+  await s.chat(4,'📬 My mailbox');
+  assert.match(s.sent.at(-1).text,/Email notifications sent to you: 1/);
+  await s.chat(2,'/password');await s.chat(2,'replacement-password');
+  await s.chat(2,'📬 My mailbox');
+  assert.match(s.sent.at(-1).text,/Email notifications sent to you: 1/);
+  await s.chat(2,'/email');await s.chat(2,'another@rajasthan.gov.in');await s.chat(2,'replacement-password');
+  await s.chat(2,'📬 My mailbox');
+  assert.match(s.sent.at(-1).text,/Email notifications sent to you: 0/);
+});
 test('removal blocks re-enrollment and suppresses queued delivery', async () => {
   const s=setup(); const a=await s.enroll(2,'Alice'), identity=await s.claim(a);
   await s.api('/internal/ingest',{...identity,email});
